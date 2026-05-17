@@ -26,6 +26,10 @@ export interface TraceInfo {
   lastAccessTime?: Date; // Track last query/access time for smart cleanup
   status: 'uploading' | 'processing' | 'ready' | 'error';
   error?: string;
+  /** Detected trace OS — determines knowledge injection and vendor detection */
+  traceOs?: 'android' | 'harmonyos' | 'unknown';
+  /** Detected trace format */
+  traceFormat?: 'perfetto_protobuf' | 'systrace_text' | 'atrace_text' | 'unknown';
   metadata?: {
     duration?: number;
     startTime?: number;
@@ -245,6 +249,22 @@ export class TraceProcessorService extends EventEmitter {
     if (!trace) return;
 
     try {
+      // Detect trace format and OS before creating processor
+      const filePath = this.getTraceFilePath(traceId);
+      if (filePath && fs.existsSync(filePath)) {
+        try {
+          const { detectTraceFormat } = await import('./traceFormatDetector');
+          const formatInfo = await detectTraceFormat(filePath);
+          trace.traceOs = formatInfo.os;
+          trace.traceFormat = formatInfo.format;
+          console.log(`[TraceProcessorService] Detected trace: os=${formatInfo.os}, format=${formatInfo.format} (${formatInfo.reason})`);
+        } catch (detectError: any) {
+          console.warn(`[TraceProcessorService] Format detection failed:`, detectError.message);
+          trace.traceOs = 'unknown';
+          trace.traceFormat = 'unknown';
+        }
+      }
+
       // Create a processor instance
       const processor = await this.createProcessor(traceId);
       this.processors.set(traceId, processor);
@@ -265,7 +285,9 @@ export class TraceProcessorService extends EventEmitter {
   }
 
   /**
-   * Create a new Trace Processor instance
+   * Create a new Trace Processor instance.
+   * All traces use the default Perfetto trace_processor_shell,
+   * which handles both Perfetto protobuf and ftrace text formats.
    */
   private async createProcessor(
     traceId: string,
@@ -274,7 +296,6 @@ export class TraceProcessorService extends EventEmitter {
     const filePath = this.getTraceFilePath(traceId);
     const processorKey = this.processorKeyForLease(traceId, leaseContext?.leaseId, leaseContext?.mode);
 
-    // Use the working trace processor
     const processor = await TraceProcessorFactory.create(traceId, filePath, {
       processorKey,
       leaseId: leaseContext?.leaseId,
@@ -563,6 +584,8 @@ export class TraceProcessorService extends EventEmitter {
           filePath: tracePath,
           uploadTime: new Date(metadata.uploadedAt || Date.now()),
           status: 'ready',
+          traceOs: metadata.traceOs,
+          traceFormat: metadata.traceFormat,
           metadata: metadata.metadata,
         };
       } else {
@@ -576,6 +599,17 @@ export class TraceProcessorService extends EventEmitter {
           uploadTime: new Date(stats.mtime),
           status: 'ready',
         };
+      }
+
+      // Detect trace format if not already known
+      if (!traceInfo.traceOs) {
+        try {
+          const { detectTraceFormat } = await import('./traceFormatDetector');
+          const formatInfo = await detectTraceFormat(tracePath);
+          traceInfo.traceOs = formatInfo.os;
+          traceInfo.traceFormat = formatInfo.format;
+          console.log(`[TraceProcessorService] Detected trace from disk: os=${formatInfo.os}, format=${formatInfo.format}`);
+        } catch { /* default to unknown */ }
       }
 
       // Register in memory

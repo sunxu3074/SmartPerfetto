@@ -328,24 +328,29 @@ sleep 1
 
 # ── trace_processor_shell ─────────────────────────────────────────────────────
 
-TRACE_PROCESSOR_DEFAULT="$PROJECT_ROOT/perfetto/out/ui/trace_processor_shell"
-TRACE_PROCESSOR="${TRACE_PROCESSOR_PATH:-$TRACE_PROCESSOR_DEFAULT}"
-if [ -n "${TRACE_PROCESSOR_PATH:-}" ]; then
-  ensure_trace_processor_path "$TRACE_PROCESSOR"
+# Search order: TRACE_PROCESSOR_PATH env > backend/bin/ > perfetto/out/ui/
+TRACE_PROCESSOR_CANDIDATES=(
+  "${TRACE_PROCESSOR_PATH:-}"
+  "$PROJECT_ROOT/backend/bin/trace_processor_shell"
+  "$PROJECT_ROOT/perfetto/out/ui/trace_processor_shell"
+)
+TRACE_PROCESSOR=""
+for _candidate in "${TRACE_PROCESSOR_CANDIDATES[@]}"; do
+  [ -z "$_candidate" ] && continue
+  if [ -f "$_candidate" ] && "$_candidate" --version >/dev/null 2>&1; then
+    TRACE_PROCESSOR="$_candidate"
+    chmod +x "$TRACE_PROCESSOR" 2>/dev/null || true
+    break
+  fi
+done
+
+if [ -n "$TRACE_PROCESSOR" ]; then
   echo "trace_processor_shell: $("$TRACE_PROCESSOR" --version 2>/dev/null | head -1)"
 else
-  if [ -f "$TRACE_PROCESSOR" ]; then
-    chmod +x "$TRACE_PROCESSOR" 2>/dev/null || true
-    if "$TRACE_PROCESSOR" --version >/dev/null 2>&1; then
-      echo "trace_processor_shell: $("$TRACE_PROCESSOR" --version 2>/dev/null | head -1)"
-    else
-      echo "Existing trace_processor_shell is invalid; replacing it."
-      rm -f "$TRACE_PROCESSOR"
-      download_trace_processor_prebuilt "$TRACE_PROCESSOR"
-    fi
-  else
-    download_trace_processor_prebuilt "$TRACE_PROCESSOR"
-  fi
+  # No local binary found — download to backend/bin/ (preferred) or perfetto/out/ui/
+  TRACE_PROCESSOR="$PROJECT_ROOT/backend/bin/trace_processor_shell"
+  mkdir -p "$(dirname "$TRACE_PROCESSOR")"
+  download_trace_processor_prebuilt "$TRACE_PROCESSOR"
 fi
 
 # ── Install backend deps if needed ────────────────────────────────────────────

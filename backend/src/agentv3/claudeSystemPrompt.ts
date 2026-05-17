@@ -357,6 +357,23 @@ export function buildSystemPromptParts(
     if (completenessSection) push(2, 'trace_completeness', completenessSection, true);
   }
 
+  // ── HarmonyOS context injection ──
+  if (context.traceOs === 'harmonyos') {
+    const harmonyRendering = loadPromptTemplate('knowledge-harmonyos-rendering');
+    if (harmonyRendering) push(2, 'harmonyos_rendering', harmonyRendering, true);
+
+    const harmonyTools = loadPromptTemplate('knowledge-harmonyos-tools');
+    if (harmonyTools) push(2, 'harmonyos_tools', harmonyTools, true);
+
+    // Override the role section for HarmonyOS traces
+    push(2, 'harmonyos_override', '## 重要：HarmonyOS Trace 分析注意事项\n\n' +
+      '此 trace 来自 HarmonyOS 设备，通过 hitrace --text 采集，由 trace_processor_shell 解析为标准 ftrace 格式。关键特征：\n' +
+      '- 渲染架构为 App → RS (RenderService) → GPU 三级流水线，无 SurfaceFlinger\n' +
+      '- HarmonyOS 独有的 tracing_mark_write 标签：`ace::`、`ArkTS`、`RSRender`、`FFRT`、`H:` 前缀等\n' +
+      '- 使用 `hdc` 和 `hitrace` 采集 trace（非 `adb` + `perfetto`）\n' +
+      '- 标准 Perfetto SQL 表（slice, counter, sched 等）均可正常使用，分析方式与 Android 一致');
+  }
+
   if (context.knowledgeBaseContext) {
     push(
       2,

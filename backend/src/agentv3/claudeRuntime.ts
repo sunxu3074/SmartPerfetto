@@ -2855,6 +2855,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       .map((e: any) => ({ errorSql: e.errorSql, errorMessage: e.errorMessage, fixedSql: e.fixedSql }));
 
     // Phase 13: System prompt assembly
+    const traceInfo = this.traceProcessorService.getTrace(traceId);
     const analysisContextForRebuild: ClaudeAnalysisContext = {
       query,
       architecture,
@@ -2876,6 +2877,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       selectionContext: options.selectionContext,
       comparison: comparisonContext,
       traceCompleteness,
+      traceOs: traceInfo?.traceOs,
+      traceFormat: traceInfo?.traceFormat,
       outputLanguage: this.config.outputLanguage,
     };
     const systemPrompt = buildSystemPrompt(analysisContextForRebuild);

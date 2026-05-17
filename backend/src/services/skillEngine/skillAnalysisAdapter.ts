@@ -165,7 +165,20 @@ export class SkillAnalysisAdapter {
    */
   async detectVendor(traceId: string): Promise<{ vendor: string; confidence: number }> {
     try {
-      // 尝试检测厂商特征
+      // HarmonyOS 检测：通过 tracing_mark_write 中的 HarmonyOS 独有标签
+      try {
+        const harmonyCheck = await this.traceProcessor.query(traceId, `
+          SELECT 1 FROM slice
+          WHERE (LOWER(name) LIKE '%ace::%' OR LOWER(name) LIKE '%rsrender%'
+             OR LOWER(name) LIKE '%ffrt%' OR LOWER(name) LIKE '%arkts%'
+             OR LOWER(name) LIKE '%harmonyos%' OR LOWER(name) LIKE '%ohos.%')
+          LIMIT 1`);
+        if (harmonyCheck.rows && harmonyCheck.rows.length > 0) {
+          return { vendor: 'harmonyos', confidence: 0.85 };
+        }
+      } catch { /* content check failed */ }
+
+      // Android vendor detection via slice table
       const result = await this.traceProcessor.query(traceId, `
         SELECT
           CASE

@@ -99,6 +99,10 @@ export interface ClaudeAnalysisContext {
   comparison?: ComparisonContext;
   /** Trace data completeness diagnosis — injected at session init, informs data gap guidance */
   traceCompleteness?: TraceCompleteness;
+  /** Detected trace OS — determines knowledge injection and SQL dialect */
+  traceOs?: 'android' | 'harmonyos' | 'unknown';
+  /** Detected trace format */
+  traceFormat?: 'perfetto_protobuf' | 'systrace_text' | 'atrace_text' | 'unknown';
   /** User-facing output language for answers, reports, and insight text. */
   outputLanguage?: OutputLanguage;
 }
