@@ -36,12 +36,18 @@ import { normalizeResultForReport } from '../../services/agentResultNormalizer';
 import { persistAgentTurn } from '../../services/persistAgentSession';
 import { getTraceProcessorPath } from '../../services/workingTraceProcessor';
 import { installTraceProcessorPrebuilt } from './traceProcessorInstaller';
+import {
+  resolveAgentRuntimeSelection,
+  type BackendAgentRuntimeKind,
+} from '../../agentRuntime/runtimeSelection';
 import type { StreamingUpdate } from '../../agent/types';
 import type { AnalysisResult } from '../../agent/core/orchestratorTypes';
+import type { QueryResult } from '../../services/traceProcessorService';
 
 export interface RunTurnInput {
   tracePath?: string;
   traceId?: string;
+  referenceTraceId?: string;
   query: string;
   sessionId?: string;
   /** Receives every StreamingUpdate from the orchestrator in real time. */
@@ -63,6 +69,9 @@ export interface RunTurnOutput {
   reportHtml?: string;
   reportError?: string;
   model?: string;
+  providerId?: string | null;
+  agentRuntimeKind?: BackendAgentRuntimeKind;
+  providerSnapshotHash?: string | null;
 }
 
 /**
@@ -120,6 +129,11 @@ export class CliAnalyzeService {
     return info !== undefined;
   }
 
+  async queryTrace(traceId: string, sql: string): Promise<QueryResult> {
+    await this.ensureTraceProcessorAvailable();
+    return getTraceProcessorService().query(traceId, sql);
+  }
+
   async runTurn(input: RunTurnInput): Promise<RunTurnOutput> {
     // Resolve traceId: either passed in (we assume caller already loaded), or load now.
     let traceId = input.traceId;
@@ -130,11 +144,17 @@ export class CliAnalyzeService {
       traceId = await this.loadTrace(input.tracePath);
     }
 
+    if (isCliE2eFakeMode()) {
+      return runCliE2eFakeTurn(input, traceId);
+    }
+
     const { sessionId, session } = this.analyzeService.prepareSession({
       traceId,
       query: input.query,
       requestedSessionId: input.sessionId,
+      referenceTraceId: input.referenceTraceId,
     });
+    const effectiveReferenceTraceId = input.referenceTraceId ?? session.referenceTraceId;
 
     // Bump runSequence for this turn. HTTP route gets the incremented value
     // from an externally-constructed runContext; CLI increments inline so the
@@ -165,6 +185,7 @@ export class CliAnalyzeService {
     try {
       result = await orchestrator.analyze(input.query, sessionId, traceId, {
         providerId: session.providerId,
+        referenceTraceId: effectiveReferenceTraceId,
       });
     } finally {
       orchestrator.off('update', handler);
@@ -182,10 +203,21 @@ export class CliAnalyzeService {
       result: { conclusion: result.conclusion, totalDurationMs: result.totalDurationMs },
     });
 
+    const persistedSnapshot = (session as unknown as {
+      _lastSnapshot?: {
+        agentRuntimeKind?: BackendAgentRuntimeKind;
+        agentRuntimeProviderId?: string | null;
+        agentRuntimeProviderSnapshotHash?: string | null;
+      };
+    })._lastSnapshot;
+    const runtimeSelection = persistedSnapshot?.agentRuntimeKind
+      ? null
+      : resolveAgentRuntimeSelection(session.providerId ?? null);
+
     // sdkSessionId is only populated on ClaudeRuntime (agentv3) — guarded call.
     const sdkSessionId =
       typeof orchestrator.getSdkSessionId === 'function'
-        ? orchestrator.getSdkSessionId(sessionId)
+        ? orchestrator.getSdkSessionId(sessionId, effectiveReferenceTraceId)
         : undefined;
 
     const reportOutput = this.buildReportHtml(session, result);
@@ -201,6 +233,9 @@ export class CliAnalyzeService {
       // exposed via IOrchestrator. Left undefined for PR1; fills in PR2 via
       // CLAUDE_MODEL env read if needed for config.json provenance.
       model: process.env.CLAUDE_MODEL,
+      providerId: persistedSnapshot?.agentRuntimeProviderId ?? session.providerId ?? null,
+      agentRuntimeKind: persistedSnapshot?.agentRuntimeKind ?? runtimeSelection?.kind,
+      providerSnapshotHash: persistedSnapshot?.agentRuntimeProviderSnapshotHash ?? session.providerSnapshotHash ?? null,
     };
   }
 
@@ -292,4 +327,121 @@ export class CliAnalyzeService {
       /* ignore — already cleaned or never started */
     }
   }
+}
+
+function isCliE2eFakeMode(): boolean {
+  return process.env.NODE_ENV === 'test' && process.env.SMARTPERFETTO_CLI_E2E_FAKE === '1';
+}
+
+async function runCliE2eFakeTurn(input: RunTurnInput, traceId: string): Promise<RunTurnOutput> {
+  const sessionId = input.sessionId || `agent-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  input.onSessionReady?.(sessionId);
+
+  const startedAt = Date.now();
+  const timestamp = Date.now();
+  const fakeConclusion = process.env.SMARTPERFETTO_CLI_E2E_FAKE_RESPONSE?.trim() || [
+    'CLI E2E fake analysis completed.',
+    `Question: ${input.query}`,
+    `Trace: ${traceId}`,
+    ...(input.referenceTraceId ? [`Reference trace: ${input.referenceTraceId}`] : []),
+  ].join('\n');
+
+  input.onEvent({
+    type: 'progress',
+    content: {
+      phase: 'cli-e2e-fake',
+      message: 'running deterministic fake CLI analysis',
+    },
+    timestamp,
+  });
+  input.onEvent({
+    type: 'thought',
+    content: {
+      thought: 'Using SMARTPERFETTO_CLI_E2E_FAKE to exercise CLI persistence and rendering without a live LLM.',
+    },
+    timestamp,
+  });
+  input.onEvent({
+    type: 'conclusion',
+    content: {
+      conclusion: fakeConclusion,
+    },
+    timestamp,
+  });
+
+  const totalDurationMs = Math.max(1, Date.now() - startedAt);
+  return {
+    sessionId,
+    traceId,
+    sdkSessionId: `cli-e2e-fake-${sessionId}`,
+    model: 'cli-e2e-fake',
+    providerId: null,
+    agentRuntimeKind: 'openai-agents-sdk',
+    providerSnapshotHash: null,
+    reportHtml: buildCliE2eFakeReportHtml({
+      sessionId,
+      traceId,
+      referenceTraceId: input.referenceTraceId,
+      query: input.query,
+      conclusion: fakeConclusion,
+      totalDurationMs,
+    }),
+    result: {
+      sessionId,
+      success: true,
+      findings: [
+        {
+          id: 'cli-e2e-fake-finding',
+          severity: 'info',
+          title: 'CLI E2E fake finding',
+          description: 'Deterministic finding emitted by the CLI E2E fake runtime.',
+          confidence: 1,
+          source: 'cli-e2e',
+        },
+      ],
+      hypotheses: [],
+      conclusion: fakeConclusion,
+      confidence: 1,
+      rounds: 1,
+      totalDurationMs,
+    },
+  };
+}
+
+function buildCliE2eFakeReportHtml(input: {
+  sessionId: string;
+  traceId: string;
+  referenceTraceId?: string;
+  query: string;
+  conclusion: string;
+  totalDurationMs: number;
+}): string {
+  const reference = input.referenceTraceId
+    ? `<p><strong>Reference trace:</strong> ${escapeHtml(input.referenceTraceId)}</p>`
+    : '';
+  return [
+    '<!doctype html>',
+    '<html>',
+    '<head><meta charset="utf-8"><title>SmartPerfetto CLI E2E Report</title></head>',
+    '<body>',
+    '<h1>SmartPerfetto CLI E2E Report</h1>',
+    `<p><strong>Session:</strong> ${escapeHtml(input.sessionId)}</p>`,
+    `<p><strong>Trace:</strong> ${escapeHtml(input.traceId)}</p>`,
+    reference,
+    `<p><strong>Duration:</strong> ${input.totalDurationMs}ms</p>`,
+    '<h2>Question</h2>',
+    `<pre>${escapeHtml(input.query)}</pre>`,
+    '<h2>Conclusion</h2>',
+    `<pre>${escapeHtml(input.conclusion)}</pre>`,
+    '</body>',
+    '</html>',
+  ].join('');
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }

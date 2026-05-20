@@ -386,6 +386,45 @@ describe('OpenAIRuntime previous response recovery', () => {
     }
   });
 
+  it('persists fresh comparison OpenAI response mappings into snapshots', () => {
+    const now = 1_700_000_000_000;
+    const runtime = new OpenAIRuntime({} as any) as any;
+    const history = [{ role: 'user', content: 'previous comparison question' }];
+    runtime.sessionMap.set('s1:ref:trace-b', {
+      history,
+      lastResponseId: 'resp_compare_fresh',
+      runState: '{"compare":true}',
+      updatedAt: now - (30 * 60 * 1000),
+    });
+
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const snapshot = runtime.takeSnapshot('s1', 'trace-1', {
+        referenceTraceId: 'trace-b',
+        comparisonSource: 'raw_trace_pair',
+        conversationSteps: [],
+        queryHistory: [],
+        conclusionHistory: [],
+        agentDialogue: [],
+        agentResponses: [],
+        dataEnvelopes: [],
+        hypotheses: [],
+        runSequence: 0,
+        conversationOrdinal: 0,
+      });
+
+      expect(snapshot.referenceTraceId).toBe('trace-b');
+      expect(snapshot.comparisonSource).toBe('raw_trace_pair');
+      expect(snapshot.sdkSessionId).toBe('resp_compare_fresh');
+      expect(snapshot.openAILastResponseId).toBe('resp_compare_fresh');
+      expect(snapshot.openAIHistory).toBe(history);
+      expect(snapshot.openAIRunState).toBe('{"compare":true}');
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+
   it('restores OpenAI response mappings with the snapshot timestamp', () => {
     const runtime = new OpenAIRuntime({} as any) as any;
     const snapshotTimestamp = Date.now() - (5 * 60 * 60 * 1000);
@@ -416,5 +455,41 @@ describe('OpenAIRuntime previous response recovery', () => {
       lastResponseId: 'resp_old',
       updatedAt: snapshotTimestamp,
     }));
+  });
+
+  it('restores comparison OpenAI response mappings under the comparison key', () => {
+    const runtime = new OpenAIRuntime({} as any) as any;
+    const snapshotTimestamp = Date.now() - (30 * 60 * 1000);
+
+    runtime.restoreFromSnapshot('s1', 'trace-1', {
+      version: 1,
+      snapshotTimestamp,
+      sessionId: 's1',
+      traceId: 'trace-1',
+      referenceTraceId: 'trace-b',
+      comparisonSource: 'raw_trace_pair',
+      conversationSteps: [],
+      queryHistory: [],
+      conclusionHistory: [],
+      agentDialogue: [],
+      agentResponses: [],
+      dataEnvelopes: [],
+      hypotheses: [],
+      analysisNotes: [],
+      analysisPlan: null,
+      planHistory: [],
+      uncertaintyFlags: [],
+      openAIHistory: [{ role: 'user', content: 'previous comparison question' }],
+      openAILastResponseId: 'resp_compare_old',
+      runSequence: 0,
+      conversationOrdinal: 0,
+    });
+
+    expect(runtime.sessionMap.get('s1')).toBeUndefined();
+    expect(runtime.sessionMap.get('s1:ref:trace-b')).toEqual(expect.objectContaining({
+      lastResponseId: 'resp_compare_old',
+      updatedAt: snapshotTimestamp,
+    }));
+    expect(runtime.getSdkSessionId('s1', 'trace-b')).toBe('resp_compare_old');
   });
 });

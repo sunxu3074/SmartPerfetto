@@ -94,6 +94,7 @@ export function buildAgentDrivenReportData(
     analysisNotes?: unknown[];
     analysisPlan?: unknown;
     uncertaintyFlags?: unknown[];
+    comparisonReportSection?: AgentDrivenReportData['comparisonReportSection'];
   } })._lastSnapshot;
 
   return {
@@ -124,5 +125,7 @@ export function buildAgentDrivenReportData(
     uncertaintyFlags: (snapshot?.uncertaintyFlags as AgentDrivenReportData['uncertaintyFlags'])
       ?? (typeof session.orchestrator.getSessionUncertaintyFlags === 'function'
         ? session.orchestrator.getSessionUncertaintyFlags(session.sessionId) : []),
+    comparisonReportSection: snapshot?.comparisonReportSection
+      ?? session.comparisonReportSection,
   };
 }

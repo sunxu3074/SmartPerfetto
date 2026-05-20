@@ -11,7 +11,11 @@
 import express from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
-import { getTraceProcessorService } from '../services/traceProcessorService';
+import {
+  getTraceProcessorService,
+  type TraceInfo,
+  type TraceProcessorLeaseQueryContext,
+} from '../services/traceProcessorService';
 import {
   createSessionLogger,
   SessionLogger,
@@ -19,6 +23,7 @@ import {
 import { getHTMLReportGenerator } from '../services/htmlReportGenerator';
 import { buildAgentDrivenReportData } from '../services/agentReportData';
 import { persistAgentTurn } from '../services/persistAgentSession';
+import { buildRawTraceComparisonReportSection } from '../services/comparisonAppendixService';
 import {
   deriveConclusionContractForNarrative,
   normalizeNarrativeForClient as sharedNormalizeNarrative,
@@ -377,6 +382,8 @@ interface AnalysisSession {
   providerSnapshotChangeReason?: string;
   /** Reference trace ID for comparison mode (dual-trace analysis) */
   referenceTraceId?: string;
+  comparisonSource?: 'raw_trace_pair' | 'analysis_result_snapshots';
+  comparisonReportSection?: import('../agentv3/sessionStateSnapshot').ComparisonReportSection;
   query: string;
   createdAt: number;
   lastActivityAt: number;
@@ -1111,20 +1118,21 @@ async function handleAnalyzeRequest(
       return;
     }
 
-    // Comparison mode: validate reference trace if provided
-    if (referenceTraceId) {
-      if (referenceTraceId === traceId) {
+    const validateReferenceTraceForRun = async (
+      candidateReferenceTraceId: string,
+    ): Promise<TraceInfo | null> => {
+      if (candidateReferenceTraceId === traceId) {
         res.status(400).json({
           success: false,
           error: 'referenceTraceId must be different from traceId',
           code: 'SAME_TRACE_COMPARISON',
         });
-        return;
+        return null;
       }
-      if (!await ensureTraceAccessible(req, res, referenceTraceId)) {
-        return;
+      if (!await ensureTraceAccessible(req, res, candidateReferenceTraceId)) {
+        return null;
       }
-      const refTrace = await traceProcessorService.getOrLoadTrace(referenceTraceId);
+      const refTrace = await traceProcessorService.getOrLoadTrace(candidateReferenceTraceId);
       if (!refTrace) {
         res.status(404).json({
           success: false,
@@ -1132,8 +1140,16 @@ async function handleAnalyzeRequest(
           hint: 'Please upload the reference trace to the backend first',
           code: 'REFERENCE_TRACE_NOT_UPLOADED',
         });
-        return;
+        return null;
       }
+      return refTrace;
+    };
+
+    // Comparison mode: validate reference trace if provided
+    let requestedReferenceTrace: TraceInfo | null = null;
+    if (referenceTraceId) {
+      requestedReferenceTrace = await validateReferenceTraceForRun(referenceTraceId);
+      if (!requestedReferenceTrace) return;
       console.log(`[AgentRoutes] Comparison mode: current=${traceId}, reference=${referenceTraceId}`);
     }
 
@@ -1161,6 +1177,7 @@ async function handleAnalyzeRequest(
         traceId,
         query,
         requestedSessionId,
+        referenceTraceId,
         providerId,
         providerScope: {
           tenantId: requestContext.tenantId,
@@ -1199,6 +1216,16 @@ async function handleAnalyzeRequest(
     if (!sessionForRun) {
       throw new Error(`Session ${sessionId} not found after preparation`);
     }
+    const effectiveReferenceTraceId = referenceTraceId || sessionForRun.referenceTraceId;
+    let effectiveReferenceTrace = requestedReferenceTrace;
+    if (effectiveReferenceTraceId) {
+      if (!effectiveReferenceTrace || effectiveReferenceTraceId !== referenceTraceId) {
+        effectiveReferenceTrace = await validateReferenceTraceForRun(effectiveReferenceTraceId);
+        if (!effectiveReferenceTrace) return;
+      }
+      sessionForRun.referenceTraceId = effectiveReferenceTraceId;
+      sessionForRun.comparisonSource = 'raw_trace_pair';
+    }
 
     const runContext = startSessionRun(sessionForRun, query, requestId);
     sessionForRun.logger.setMetadata({
@@ -1208,7 +1235,9 @@ async function handleAnalyzeRequest(
     });
 
     let agentRunLease: TraceProcessorLeaseRecord | null = null;
+    let referenceAgentRunLease: TraceProcessorLeaseRecord | null = null;
     let agentRunLeaseDecision: TraceProcessorLeaseModeDecision | null = null;
+    let referenceAgentRunLeaseDecision: TraceProcessorLeaseModeDecision | null = null;
     if (enterpriseLeasesEnabled()) {
       try {
         const scope = leaseScopeFromRequestContext(requestContext);
@@ -1258,6 +1287,75 @@ async function handleAnalyzeRequest(
         });
         return;
       }
+
+      if (effectiveReferenceTraceId) {
+        try {
+          const scope = leaseScopeFromRequestContext(requestContext);
+          referenceAgentRunLeaseDecision = buildLeaseModeDecisionForTrace(
+            scope,
+            effectiveReferenceTraceId,
+            'agent_run',
+            {
+              analysisMode: options.analysisMode,
+              traceSizeBytes: effectiveReferenceTrace?.size,
+            },
+          );
+          referenceAgentRunLease = getTraceProcessorLeaseStore().acquireHolder(
+            scope,
+            effectiveReferenceTraceId,
+            {
+              holderType: 'agent_run',
+              holderRef: `${runContext.runId}:reference`,
+              runId: runContext.runId,
+              sessionId,
+              metadata: {
+                requestId: runContext.requestId,
+                runSequence: runContext.sequence,
+                traceSide: 'reference',
+                leaseModeReason: referenceAgentRunLeaseDecision.reason,
+                leaseModeSignals: referenceAgentRunLeaseDecision.signals,
+              },
+            },
+            { mode: referenceAgentRunLeaseDecision.mode },
+          );
+          referenceAgentRunLease = markLeaseReadyIfNew(referenceAgentRunLease, scope);
+          await traceProcessorService.ensureProcessorForLease(
+            effectiveReferenceTraceId,
+            referenceAgentRunLease.id,
+            referenceAgentRunLease.mode,
+            scope,
+          );
+        } catch (leaseError: any) {
+          if (referenceAgentRunLease) {
+            try {
+              getTraceProcessorLeaseStore().markFailed(leaseScopeFromRequestContext(requestContext), referenceAgentRunLease.id);
+            } catch (markFailedError: any) {
+              console.warn(`[AgentRoutes] Failed to mark reference agent_run lease ${referenceAgentRunLease.id} failed: ${markFailedError.message}`);
+            }
+          }
+          if (agentRunLease) {
+            try {
+              getTraceProcessorLeaseStore().releaseHolder(
+                leaseScopeFromRequestContext(requestContext),
+                agentRunLease.id,
+                'agent_run',
+                runContext.runId,
+              );
+            } catch (releaseError: any) {
+              console.warn(`[AgentRoutes] Failed to release current agent_run lease after reference lease failure ${agentRunLease.id}: ${releaseError.message}`);
+            }
+          }
+          sessionForRun.status = 'failed';
+          sessionForRun.error = leaseError.message;
+          markSessionRunStatus(sessionForRun, 'failed', leaseError.message);
+          res.status(409).json({
+            success: false,
+            code: 'REFERENCE_TRACE_PROCESSOR_LEASE_UNAVAILABLE',
+            error: leaseError.message,
+          });
+          return;
+        }
+      }
     }
 
     // Validate traceContext — must be array of objects with columns/rows
@@ -1273,7 +1371,7 @@ async function handleAnalyzeRequest(
       blockedStrategyIds,
       traceProcessorService,
       runContext,
-      referenceTraceId,
+      referenceTraceId: effectiveReferenceTraceId,
       traceContext: traceContext && traceContext.length > 0 ? traceContext : undefined,
       providerId: sessionForRun.providerId !== undefined ? sessionForRun.providerId : providerId,
       traceProcessorLease: agentRunLease
@@ -1281,6 +1379,14 @@ async function handleAnalyzeRequest(
           traceId,
           leaseId: agentRunLease.id,
           mode: agentRunLease.mode,
+          leaseScope: leaseScopeFromRequestContext(requestContext),
+        }
+        : undefined,
+      referenceTraceProcessorLease: referenceAgentRunLease && effectiveReferenceTraceId
+        ? {
+          traceId: effectiveReferenceTraceId,
+          leaseId: referenceAgentRunLease.id,
+          mode: referenceAgentRunLease.mode,
           leaseScope: leaseScopeFromRequestContext(requestContext),
         }
         : undefined,
@@ -1298,16 +1404,29 @@ async function handleAnalyzeRequest(
         });
       }
     }).finally(() => {
-      if (!agentRunLease) return;
-      try {
-        getTraceProcessorLeaseStore().releaseHolder(
-          leaseScopeFromRequestContext(requestContext),
-          agentRunLease.id,
-          'agent_run',
-          runContext.runId,
-        );
-      } catch (releaseError: any) {
-        console.warn(`[AgentRoutes] Failed to release agent_run lease ${agentRunLease.id}: ${releaseError.message}`);
+      if (agentRunLease) {
+        try {
+          getTraceProcessorLeaseStore().releaseHolder(
+            leaseScopeFromRequestContext(requestContext),
+            agentRunLease.id,
+            'agent_run',
+            runContext.runId,
+          );
+        } catch (releaseError: any) {
+          console.warn(`[AgentRoutes] Failed to release agent_run lease ${agentRunLease.id}: ${releaseError.message}`);
+        }
+      }
+      if (referenceAgentRunLease) {
+        try {
+          getTraceProcessorLeaseStore().releaseHolder(
+            leaseScopeFromRequestContext(requestContext),
+            referenceAgentRunLease.id,
+            'agent_run',
+            `${runContext.runId}:reference`,
+          );
+        } catch (releaseError: any) {
+          console.warn(`[AgentRoutes] Failed to release reference agent_run lease ${referenceAgentRunLease.id}: ${releaseError.message}`);
+        }
       }
     });
 
@@ -1328,6 +1447,10 @@ async function handleAnalyzeRequest(
       leaseMode: agentRunLease?.mode,
       leaseModeReason: agentRunLeaseDecision?.reason,
       leaseQueueLength: agentRunLeaseDecision?.signals.sharedQueueLength,
+      referenceLeaseId: referenceAgentRunLease?.id,
+      referenceLeaseState: referenceAgentRunLease?.state,
+      referenceLeaseMode: referenceAgentRunLease?.mode,
+      referenceLeaseModeReason: referenceAgentRunLeaseDecision?.reason,
       requestId: runContext.requestId,
       runSequence: runContext.sequence,
       observability: {
@@ -2700,8 +2823,15 @@ async function runAgentDrivenAnalysis(
   modelRouter.on('llmTelemetry', onLlmTelemetry);
 
   const runWithTraceProcessorLease = <T>(fn: () => Promise<T>): Promise<T> => {
-    if (options.traceProcessorLease && options.traceProcessorService?.runWithLease) {
-      return options.traceProcessorService.runWithLease(options.traceProcessorLease, fn);
+    const leaseContexts = [
+      options.traceProcessorLease,
+      options.referenceTraceProcessorLease,
+    ].filter(Boolean) as TraceProcessorLeaseQueryContext[];
+    if (leaseContexts.length > 1 && options.traceProcessorService?.runWithLeases) {
+      return options.traceProcessorService.runWithLeases(leaseContexts, fn);
+    }
+    if (leaseContexts.length === 1 && options.traceProcessorService?.runWithLease) {
+      return options.traceProcessorService.runWithLease(leaseContexts[0], fn);
     }
     return fn();
   };
@@ -2884,6 +3014,31 @@ async function runAgentDrivenAnalysis(
       updateSceneReconstructionArtifactsFromEnvelopes(session, session.dataEnvelopes as DataEnvelope[]);
     }
 
+    if (session.referenceTraceId && options.traceProcessorService) {
+      session.comparisonSource = 'raw_trace_pair';
+      try {
+        session.comparisonReportSection = await runWithTraceProcessorLease(() =>
+          buildRawTraceComparisonReportSection(options.traceProcessorService, {
+            currentTraceId: traceId,
+            referenceTraceId: session.referenceTraceId!,
+          }),
+        );
+      } catch (comparisonSectionError: any) {
+        session.comparisonReportSection = {
+          source: 'raw_trace_pair',
+          title: 'SmartPerfetto 确定性对比附录',
+          markdown: [
+            '## SmartPerfetto 确定性对比附录',
+            '',
+            `- 固定 SQL 附录生成失败：${comparisonSectionError?.message || String(comparisonSectionError)}`,
+            '',
+          ].join('\n'),
+          html: `<section class="smartperfetto-comparison-appendix"><h2>SmartPerfetto 确定性对比附录</h2><p>固定 SQL 附录生成失败：${escapeHtmlForInlineHtml(comparisonSectionError?.message || String(comparisonSectionError))}</p></section>`,
+          limitations: [`固定 SQL 附录生成失败：${comparisonSectionError?.message || String(comparisonSectionError)}`],
+        };
+      }
+    }
+
     // Log completion details
     logger.info('AgentDrivenAnalysis', 'Agent-driven analysis completed', {
       confidence: result.confidence,
@@ -2968,6 +3123,14 @@ function sanitizeConversationText(value: unknown, maxLen = 240): string {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, maxLen);
+}
+
+function escapeHtmlForInlineHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function appendConversationStep(session: AnalysisSession, update: StreamingUpdate): void {
@@ -4815,6 +4978,15 @@ function sendAgentDrivenResult(res: express.Response, session: AnalysisSession) 
       conversationTimeline: session.conversationSteps,
       reportUrl,
       reportError,
+      comparisonReportSection: session.comparisonReportSection
+        ? {
+          source: session.comparisonReportSection.source,
+          title: session.comparisonReportSection.title,
+          markdown: session.comparisonReportSection.markdown,
+          limitations: session.comparisonReportSection.limitations,
+          evidencePack: session.comparisonReportSection.evidencePack,
+        }
+        : undefined,
       resultSnapshotId,
       observability,
     },

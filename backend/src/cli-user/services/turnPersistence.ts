@@ -21,6 +21,7 @@ import {
   writeConfig,
   writeConclusion,
   writeReportHtml,
+  writeTurnReportHtml,
   writeTurnMarkdown,
 } from '../io/sessionStore';
 import { upsertSession } from '../io/indexJson';
@@ -44,20 +45,26 @@ export interface CommitTurnInput {
   config: CliSessionConfig;
   /** Pre-formatted markdown for `turns/NNN.md`. */
   turnMarkdown: string;
+  /** Optional deterministic appendix, currently used by dual-trace comparison. */
+  reportAppendix?: { markdown: string; html: string };
   /** Caller-constructed index row. */
   indexEntry: CliSessionIndexEntry;
 }
 
 export function commitTurnOutputs(input: CommitTurnInput): void {
-  const { paths, sp, renderer, sessionId, turn, query, result, config, turnMarkdown, indexEntry } = input;
+  const { paths, sp, renderer, sessionId, turn, query, result, config, turnMarkdown, reportAppendix, indexEntry } = input;
 
   const conclusion = result.result.conclusion || '';
 
   writeConclusion(sp, conclusion);
-  writeTurnMarkdown(sp, turn, turnMarkdown);
+  writeTurnMarkdown(sp, turn, reportAppendix?.markdown ? `${turnMarkdown}\n\n${reportAppendix.markdown}` : turnMarkdown);
 
+  let turnReportPath: string | undefined;
+  const reportHtml = result.reportHtml && reportAppendix?.html
+    ? appendHtmlToBody(result.reportHtml, reportAppendix.html)
+    : result.reportHtml;
   const reportPathForUser = result.reportHtml
-    ? (writeReportHtml(sp, result.reportHtml), sp.report)
+    ? (turnReportPath = writeTurnReportHtml(sp, turn, reportHtml || ''), writeReportHtml(sp, reportHtml || ''), sp.report)
     : `(report generation failed${result.reportError ? `: ${result.reportError}` : ''})`;
 
   writeConfig(sp, config);
@@ -70,7 +77,7 @@ export function commitTurnOutputs(input: CommitTurnInput): void {
     confidence: result.result.confidence,
     rounds: result.result.rounds,
     durationMs: result.result.totalDurationMs,
-    reportFile: result.reportHtml ? sp.report : undefined,
+    reportFile: turnReportPath,
     error: result.reportError,
   });
 
@@ -83,7 +90,17 @@ export function commitTurnOutputs(input: CommitTurnInput): void {
   });
   renderer.printCompletion({
     reportPath: reportPathForUser,
+    turnReportPath,
     sessionDir: sp.dir,
     sessionId,
+    success: result.result.success,
   });
+}
+
+function appendHtmlToBody(html: string, appendixHtml: string): string {
+  const closeBody = /<\/body>\s*<\/html>\s*$/i;
+  if (closeBody.test(html)) {
+    return html.replace(closeBody, `${appendixHtml}\n</body>\n</html>`);
+  }
+  return `${html}\n${appendixHtml}`;
 }

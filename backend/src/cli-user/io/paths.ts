@@ -8,6 +8,7 @@
  * Layout:
  *   $SMARTPERFETTO_HOME/                (default: ~/.smartperfetto)
  *   ├── index.json                      (global session catalog)
+ *   ├── traces/                         (CLI-managed trace copies)
  *   └── sessions/
  *       └── <sessionId>/
  *           ├── config.json
@@ -27,6 +28,7 @@ import * as path from 'path';
 export interface CliPaths {
   home: string;
   sessionsRoot: string;
+  tracesRoot: string;
   indexFile: string;
 }
 
@@ -44,6 +46,7 @@ export function computePaths(overrideDir?: string): CliPaths {
   return {
     home,
     sessionsRoot: path.join(home, 'sessions'),
+    tracesRoot: path.join(home, 'traces'),
     indexFile: path.join(home, 'index.json'),
   };
 }
@@ -51,6 +54,7 @@ export function computePaths(overrideDir?: string): CliPaths {
 /** Create the home + sessions directories if missing. Idempotent. */
 export function ensureLayout(paths: CliPaths): void {
   fs.mkdirSync(paths.sessionsRoot, { recursive: true });
+  fs.mkdirSync(paths.tracesRoot, { recursive: true });
 }
 
 /** Per-session paths. Files may not exist yet — callers check as needed. */

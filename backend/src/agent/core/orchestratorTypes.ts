@@ -175,7 +175,7 @@ export interface IOrchestrator {
   /** Optional runtime-specific intervention hook. */
   getInterventionController?(): any;
   /** SDK session ID for runtimes that expose one. */
-  getSdkSessionId?(sessionId: string): string | undefined;
+  getSdkSessionId?(sessionId: string, referenceTraceId?: string): string | undefined;
   /**
    * @deprecated P1-7: Dead code — sessionMap is loaded from `claude_session_map.json` at construction.
    * Kept for backward compatibility but never called from route layer.

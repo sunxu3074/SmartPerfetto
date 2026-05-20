@@ -24,15 +24,19 @@ import * as path from 'path';
 import type { CliPaths, SessionPaths } from '../io/paths';
 import { ensureSessionLayout, sessionPaths } from '../io/paths';
 import type { Renderer } from '../repl/renderer';
-import type { CliSessionConfig } from '../types';
-import type { CliAnalyzeService } from './cliAnalyzeService';
+import type { CliSessionConfig, CliTranscriptTurn } from '../types';
+import type { CliAnalyzeService, RunTurnOutput } from './cliAnalyzeService';
 import { commitTurnOutputs } from './turnPersistence';
 import { loadSession } from '../io/sessionStore';
 import { readIndex } from '../io/indexJson';
 import { appendStreamEvent } from '../io/transcriptWriter';
+import {
+  buildComparisonAppendix,
+} from '../../services/comparisonAppendixService';
 
-/** Max chars of prior conclusion replayed as preamble on Level 3 resume. */
-const PREAMBLE_MAX_CHARS = 1500;
+const RESUME_CONTEXT_MAX_CHARS = 4000;
+const RESUME_TURN_MAX_CHARS = 1200;
+const RESUME_MAX_TURNS = 3;
 
 export interface TurnRunnerContext {
   paths: CliPaths;
@@ -57,14 +61,39 @@ export interface TurnResult {
  */
 export async function startSession(
   ctx: TurnRunnerContext,
-  input: { tracePath: string; query: string },
+  input: { tracePath: string; query: string; referenceTracePath?: string },
 ): Promise<TurnResult> {
   const tracePath = path.resolve(input.tracePath);
-  console.log(`Loading trace: ${tracePath}`);
+  logText(ctx, `Loading trace: ${tracePath}`);
   // loadTraceFromFilePath throws on ENOENT; we let it propagate so there's
   // one source of truth for the existence check.
   const traceId = await ctx.service.loadTrace(tracePath);
-  console.log(`Trace loaded (traceId=${traceId.slice(0, 8)}…)`);
+  logText(ctx, `Trace loaded (traceId=${traceId.slice(0, 8)}…)`);
+
+  let referenceTracePath: string | undefined;
+  let referenceTraceId: string | undefined;
+  let reportAppendix: { markdown: string; html: string } | undefined;
+  if (input.referenceTracePath) {
+    referenceTracePath = path.resolve(input.referenceTracePath);
+    if (referenceTracePath === tracePath) {
+      throw new Error('reference trace must be different from current trace');
+    }
+    logText(ctx, `Loading reference trace: ${referenceTracePath}`);
+    referenceTraceId = await ctx.service.loadTrace(referenceTracePath);
+    logText(ctx, `Reference trace loaded (traceId=${referenceTraceId.slice(0, 8)}…)`);
+    reportAppendix = await buildComparisonAppendix(ctx.service, {
+      currentTraceId: traceId,
+      referenceTraceId,
+    }).catch((err) => ({
+      markdown: [
+        '## SmartPerfetto 确定性对比附录',
+        '',
+        `- 固定 SQL 附录生成失败：${(err as Error).message}`,
+        '',
+      ].join('\n'),
+      html: `<section><h2>SmartPerfetto 确定性对比附录</h2><p>固定 SQL 附录生成失败：${escapeHtml((err as Error).message)}</p></section>`,
+    }));
+  }
 
   const startedAt = Date.now();
   let sp: SessionPaths | undefined;
@@ -73,6 +102,7 @@ export async function startSession(
 
   const result = await ctx.service.runTurn({
     traceId,
+    referenceTraceId,
     query: input.query,
     onSessionReady: (sid) => {
       sp = sessionPaths(ctx.paths, sid);
@@ -97,8 +127,14 @@ export async function startSession(
 
   const config: CliSessionConfig = {
     sessionId: resolvedSessionId,
+    backendSessionId: result.sessionId,
     tracePath,
     traceId,
+    referenceTracePath,
+    referenceTraceId,
+    providerId: result.providerId,
+    agentRuntimeKind: result.agentRuntimeKind,
+    providerSnapshotHash: result.providerSnapshotHash,
     sdkSessionId: result.sdkSessionId,
     model: result.model,
     createdAt: startedAt,
@@ -116,12 +152,15 @@ export async function startSession(
     result,
     config,
     turnMarkdown: formatTurnMarkdown(1, input.query, result.result.conclusion || '', result.result, false),
+    reportAppendix,
     indexEntry: {
       sessionId: resolvedSessionId,
       createdAt: startedAt,
       lastTurnAt: now,
       tracePath,
-      traceFilename: path.basename(tracePath),
+      traceFilename: referenceTracePath
+        ? `${path.basename(tracePath)} vs ${path.basename(referenceTracePath)}`
+        : path.basename(tracePath),
       firstQuery: input.query,
       turnCount: 1,
       status: result.result.success ? 'completed' : 'failed',
@@ -135,6 +174,14 @@ export async function startSession(
     success: result.result.success,
     degraded: false,
   };
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 /**
@@ -159,7 +206,7 @@ export async function continueSession(
   const nextTurn = existingConfig.turnCount + 1;
   const streamFile = sp.stream;
 
-  console.log(`Resuming session ${userSessionId} (turn ${nextTurn})`);
+  logText(ctx, `Resuming session ${userSessionId} (turn ${nextTurn})`);
   const reloaded = await ctx.service.reloadTraceById(existingConfig.traceId);
 
   let effectiveTraceId: string;
@@ -169,19 +216,36 @@ export async function continueSession(
 
   if (reloaded) {
     effectiveTraceId = existingConfig.traceId;
-    effectiveQuery = input.query;
-    requestedSessionId = userSessionId;
-    console.log(`Trace reloaded (traceId=${effectiveTraceId.slice(0, 8)}…)`);
+    effectiveQuery = buildResumeContextQuery(sp, input.query);
+    requestedSessionId = existingConfig.backendSessionId || userSessionId;
+    logText(ctx, `Trace reloaded (traceId=${effectiveTraceId.slice(0, 8)}…)`);
   } else {
-    console.log('(trace evicted from cache — loading fresh and replaying conclusion as preamble)');
+    logText(ctx, '(trace evicted from cache — loading fresh and replaying conclusion as preamble)');
     effectiveTraceId = await ctx.service.loadTrace(existingConfig.tracePath);
-    effectiveQuery = buildPreambleQuery(sp.conclusion, input.query);
+    effectiveQuery = buildResumeContextQuery(sp, input.query);
     requestedSessionId = undefined;
     degraded = true;
   }
 
-  const result = await ctx.service.runTurn({
+  let effectiveReferenceTraceId = existingConfig.referenceTraceId;
+  if (existingConfig.referenceTracePath) {
+    const referenceReloaded = existingConfig.referenceTraceId
+      ? await ctx.service.reloadTraceById(existingConfig.referenceTraceId)
+      : false;
+    if (!referenceReloaded) {
+      effectiveReferenceTraceId = await ctx.service.loadTrace(existingConfig.referenceTracePath);
+      logText(ctx, `Reference trace reloaded fresh (traceId=${effectiveReferenceTraceId.slice(0, 8)}…)`);
+    }
+  } else if (existingConfig.referenceTraceId) {
+    const referenceReloaded = await ctx.service.reloadTraceById(existingConfig.referenceTraceId);
+    if (!referenceReloaded) {
+      throw new Error('comparison session is missing referenceTracePath; cannot reload reference trace');
+    }
+  }
+
+  const runInput: Parameters<CliAnalyzeService['runTurn']>[0] = {
     traceId: effectiveTraceId,
+    referenceTraceId: effectiveReferenceTraceId,
     query: effectiveQuery,
     sessionId: requestedSessionId,
     onSessionReady: () => {
@@ -191,13 +255,31 @@ export async function continueSession(
       ctx.renderer.onEvent(update);
       appendStreamEvent(streamFile, update);
     },
-  });
+  };
+  let result: RunTurnOutput;
+  try {
+    result = await ctx.service.runTurn(runInput);
+  } catch (err) {
+    if (!requestedSessionId || !isTraceIdMismatchError(err)) throw err;
+    logText(ctx, '(persisted backend session no longer matches this trace — starting a fresh backend turn with CLI transcript context)');
+    degraded = true;
+    requestedSessionId = undefined;
+    result = await ctx.service.runTurn({
+      ...runInput,
+      sessionId: undefined,
+    });
+  }
 
   const now = Date.now();
   const updatedConfig: CliSessionConfig = {
     ...existingConfig,
     sessionId: userSessionId,
+    backendSessionId: result.sessionId,
     traceId: effectiveTraceId,
+    referenceTraceId: effectiveReferenceTraceId,
+    providerId: result.providerId ?? existingConfig.providerId,
+    agentRuntimeKind: result.agentRuntimeKind ?? existingConfig.agentRuntimeKind,
+    providerSnapshotHash: result.providerSnapshotHash ?? existingConfig.providerSnapshotHash,
     sdkSessionId: result.sdkSessionId || existingConfig.sdkSessionId,
     model: result.model || existingConfig.model,
     lastTurnAt: now,
@@ -230,7 +312,7 @@ export async function continueSession(
   });
 
   if (degraded) {
-    console.log('\nnote: SDK context was unavailable — replayed prior conclusion as preamble.');
+    logText(ctx, '\nnote: SDK context was unavailable — replayed prior conclusion as preamble.');
   }
 
   return {
@@ -242,26 +324,82 @@ export async function continueSession(
   };
 }
 
-function buildPreambleQuery(conclusionFile: string, userQuery: string): string {
-  let preamble = '';
-  try {
-    preamble = fs.readFileSync(conclusionFile, 'utf-8');
-  } catch {
-    // Missing or unreadable — fall through to a plain fresh run.
-  }
-  if (!preamble.trim()) return userQuery;
+function isTraceIdMismatchError(err: unknown): boolean {
+  return err instanceof Error && /traceId mismatch for requested session/i.test(err.message);
+}
 
-  const trimmed = preamble.length > PREAMBLE_MAX_CHARS
-    ? `${truncateAtBoundary(preamble, PREAMBLE_MAX_CHARS)}…（已截断）`
-    : preamble;
+function logText(ctx: TurnRunnerContext, message: string): void {
+  if (ctx.renderer.format === 'text') console.log(message);
+}
+
+export function buildResumeContextQuery(sp: SessionPaths, userQuery: string): string {
+  const transcriptTurns = readTranscriptTurns(sp.transcript).slice(-RESUME_MAX_TURNS);
+  let context = '';
+
+  if (transcriptTurns.length > 0) {
+    context = transcriptTurns
+      .map((turn) => {
+        const answer = turn.conclusionMd?.trim()
+          ? truncateAtBoundary(turn.conclusionMd.trim(), RESUME_TURN_MAX_CHARS)
+          : '(empty)';
+        return [
+          `Turn ${turn.turn}`,
+          `Question: ${turn.question}`,
+          `Conclusion: ${answer}`,
+        ].join('\n');
+      })
+      .join('\n\n---\n\n');
+  } else {
+    context = readConclusionContext(sp.conclusion);
+  }
+
+  if (!context.trim()) return userQuery;
+
+  const trimmed = context.length > RESUME_CONTEXT_MAX_CHARS
+    ? `${truncateAtBoundary(context, RESUME_CONTEXT_MAX_CHARS)}…（已截断）`
+    : context;
+  const sessionId = path.basename(sp.dir);
 
   return [
-    '（continuing prior analysis; previous conclusion below）',
+    '（continuing prior SmartPerfetto CLI session; previous context below）',
+    `Session id: ${sessionId}`,
+    `Session dir: ${sp.dir}`,
+    `Report path: ${sp.report}`,
     '---',
     trimmed,
     '---',
+    'Use the previous context when it is sufficient; only query the trace again if the new question needs new evidence.',
     `用户新问题: ${userQuery}`,
   ].join('\n');
+}
+
+function readConclusionContext(conclusionFile: string): string {
+  try {
+    return fs.readFileSync(conclusionFile, 'utf-8');
+  } catch {
+    return '';
+  }
+}
+
+function readTranscriptTurns(transcriptFile: string): CliTranscriptTurn[] {
+  try {
+    if (!fs.existsSync(transcriptFile)) return [];
+    return fs
+      .readFileSync(transcriptFile, 'utf-8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line) as CliTranscriptTurn;
+        } catch {
+          return null;
+        }
+      })
+      .filter((turn): turn is CliTranscriptTurn => Boolean(turn && typeof turn.turn === 'number'));
+  } catch {
+    return [];
+  }
 }
 
 /**

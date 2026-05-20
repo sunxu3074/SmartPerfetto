@@ -282,6 +282,45 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
   });
 
   describe('Trace Initialization', () => {
+    it('resolves current/reference lease contexts by trace id inside runWithLeases', async () => {
+      const currentLease = {
+        traceId: 'trace-current',
+        leaseId: 'lease-current',
+        mode: 'shared',
+      };
+      const referenceLease = {
+        traceId: 'trace-reference',
+        leaseId: 'lease-reference',
+        mode: 'isolated',
+      };
+
+      await service.runWithLeases([currentLease, referenceLease], async () => {
+        expect((service as any).resolveLeaseQueryContext('trace-current')).toEqual(currentLease);
+        expect((service as any).resolveLeaseQueryContext('trace-reference')).toEqual(referenceLease);
+        expect((service as any).resolveLeaseQueryContext('trace-missing')).toBeUndefined();
+      });
+    });
+
+    it('should use SMARTPERFETTO_TRACE_UPLOAD_DIR for the default upload directory', () => {
+      const previous = process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR;
+      const envUploadDir = path.join(os.tmpdir(), `smartperfetto-env-upload-${uuidv4()}`);
+
+      try {
+        process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR = envUploadDir;
+        const envService = new TraceProcessorService();
+
+        expect(envService.getTraceFilePath('trace-env')).toBe(path.join(envUploadDir, 'trace-env.trace'));
+        expect(fs.existsSync(envUploadDir)).toBe(true);
+      } finally {
+        if (previous === undefined) {
+          delete process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR;
+        } else {
+          process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR = previous;
+        }
+        fs.rmSync(envUploadDir, { recursive: true, force: true });
+      }
+    });
+
     it('should initialize upload with unique traceId', async () => {
       const traceId = await service.initializeUpload('test.trace', 1000);
 

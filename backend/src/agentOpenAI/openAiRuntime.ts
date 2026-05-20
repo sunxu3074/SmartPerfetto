@@ -372,8 +372,12 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     this.traceProcessorService = traceProcessorService;
   }
 
-  getSdkSessionId(sessionId: string): string | undefined {
-    const entry = this.sessionMap.get(sessionId);
+  private buildSessionMapKey(sessionId: string, referenceTraceId?: string): string {
+    return referenceTraceId ? `${sessionId}:ref:${referenceTraceId}` : sessionId;
+  }
+
+  getSdkSessionId(sessionId: string, referenceTraceId?: string): string | undefined {
+    const entry = this.sessionMap.get(this.buildSessionMapKey(sessionId, referenceTraceId));
     return entry && Date.now() - (entry.updatedAt || 0) < OPENAI_SESSION_FRESHNESS_MS
       ? entry.lastResponseId
       : undefined;
@@ -897,7 +901,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
   ): SessionStateSnapshot {
     const planState = this.sessionPlans.get(sessionId);
     const artifactStore = this.artifactStores.get(sessionId);
-    const sessionEntry = this.sessionMap.get(sessionId);
+    const sessionEntry = this.sessionMap.get(
+      this.buildSessionMapKey(sessionId, sessionFields.referenceTraceId),
+    );
     const freshSessionEntry = sessionEntry && Date.now() - (sessionEntry.updatedAt || 0) < OPENAI_SESSION_FRESHNESS_MS
       ? sessionEntry
       : undefined;
@@ -947,7 +953,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       this.architectureCache.set(traceId, snapshot.architecture);
     }
     if (snapshot.openAIHistory || snapshot.openAILastResponseId || snapshot.sdkSessionId) {
-      this.sessionMap.set(sessionId, {
+      this.sessionMap.set(this.buildSessionMapKey(sessionId, snapshot.referenceTraceId), {
         history: snapshot.openAIHistory as AgentInputItem[] | undefined,
         lastResponseId: snapshot.openAILastResponseId || snapshot.sdkSessionId,
         runState: snapshot.openAIRunState,
@@ -1132,9 +1138,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           outputLanguage: config.outputLanguage,
         } satisfies ClaudeAnalysisContext);
 
-    const sessionMapKey = options.referenceTraceId
-      ? `${sessionId}:ref:${options.referenceTraceId}`
-      : sessionId;
+    const sessionMapKey = this.buildSessionMapKey(sessionId, options.referenceTraceId);
 
     return {
       systemPrompt,

@@ -32,6 +32,7 @@ import { openPath } from '../io/openFile';
 import { parseSlashCommand, SLASH_HELP } from './slashCommands';
 import type { CliSessionConfig } from '../types';
 import { DEFAULT_ANALYSIS_QUERY } from '../constants';
+import { assertAnalysisRuntimeReady } from '../services/runtimeGuard';
 
 /** Ctrl+C double-press window. Matches common CLI tools (bash, python, Claude Code). */
 const CTRL_C_DOUBLE_PRESS_MS = 1500;
@@ -252,6 +253,7 @@ function tryLoadSession(paths: CliPaths, sessionId: string): LoadedSession | nul
 async function handleLoad(ctx: ReplContext, tracePath: string): Promise<LoadedSession> {
   // /load kicks off the first turn with the generic catch-all query; the user
   // can follow up with a targeted /ask for real drilling.
+  assertAnalysisRuntimeReady();
   const expanded = expandPath(tracePath);
   const r = await startSession(ctx, { tracePath: expanded, query: DEFAULT_ANALYSIS_QUERY });
   return refreshSession(ctx, r.sessionId);
@@ -262,6 +264,10 @@ async function handleAsk(
   cs: LoadedSession,
   query: string,
 ): Promise<LoadedSession> {
+  assertAnalysisRuntimeReady({
+    providerId: cs.config.providerId,
+    runtimeOverride: cs.config.agentRuntimeKind,
+  });
   await continueSession(ctx, { sessionId: cs.sessionId, query });
   return refreshSession(ctx, cs.sessionId);
 }

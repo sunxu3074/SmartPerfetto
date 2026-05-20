@@ -42,6 +42,17 @@ export function writeReportHtml(sp: SessionPaths, html: string): void {
   fs.writeFileSync(sp.report, html, 'utf-8');
 }
 
+export function turnReportPath(sp: SessionPaths, turn: number): string {
+  return path.join(sp.turnsDir, `${String(turn).padStart(3, '0')}.html`);
+}
+
+export function writeTurnReportHtml(sp: SessionPaths, turn: number, html: string): string {
+  ensureSessionLayout(sp);
+  const filePath = turnReportPath(sp, turn);
+  fs.writeFileSync(filePath, html, 'utf-8');
+  return filePath;
+}
+
 /** Per-turn markdown snapshot. `turn` is 1-indexed. */
 export function writeTurnMarkdown(sp: SessionPaths, turn: number, markdown: string): void {
   ensureSessionLayout(sp);

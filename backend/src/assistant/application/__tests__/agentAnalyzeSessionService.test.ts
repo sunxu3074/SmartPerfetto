@@ -172,6 +172,68 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     expect(prepared.session.status).toBe('pending');
   });
 
+  test('inherits reference trace identity when continuing an in-memory comparison session', () => {
+    const existing = createSession('agent-session-1', 'trace-1');
+    existing.referenceTraceId = 'ref-trace-1';
+    existing.comparisonSource = 'raw_trace_pair';
+    assistantAppService.setSession(existing.sessionId, existing);
+
+    const prepared = service.prepareSession({
+      traceId: 'trace-1',
+      query: 'follow up without explicit reference',
+      requestedSessionId: existing.sessionId,
+      options: {},
+    });
+
+    expect(prepared.isNewSession).toBe(false);
+    expect(prepared.session.referenceTraceId).toBe('ref-trace-1');
+    expect(prepared.session.comparisonSource).toBe('raw_trace_pair');
+  });
+
+  test('throws REFERENCE_TRACE_ID_MISMATCH when requested comparison session uses another reference trace', () => {
+    const existing = createSession('agent-session-1', 'trace-1');
+    existing.referenceTraceId = 'ref-trace-1';
+    existing.comparisonSource = 'raw_trace_pair';
+    assistantAppService.setSession(existing.sessionId, existing);
+
+    try {
+      service.prepareSession({
+        traceId: 'trace-1',
+        query: 'compare against another reference',
+        requestedSessionId: existing.sessionId,
+        referenceTraceId: 'ref-trace-2',
+        options: {},
+      });
+      throw new Error('expected prepareSession to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(AnalyzeSessionPreparationError);
+      const prepError = error as AnalyzeSessionPreparationError;
+      expect(prepError.code).toBe('REFERENCE_TRACE_ID_MISMATCH');
+      expect(prepError.httpStatus).toBe(400);
+    }
+  });
+
+  test('does not upgrade an existing single-trace session into raw comparison mode', () => {
+    const existing = createSession('agent-session-1', 'trace-1');
+    assistantAppService.setSession(existing.sessionId, existing);
+
+    try {
+      service.prepareSession({
+        traceId: 'trace-1',
+        query: 'start compare inside old single session',
+        requestedSessionId: existing.sessionId,
+        referenceTraceId: 'ref-trace-1',
+        options: {},
+      });
+      throw new Error('expected prepareSession to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(AnalyzeSessionPreparationError);
+      const prepError = error as AnalyzeSessionPreparationError;
+      expect(prepError.code).toBe('REFERENCE_TRACE_ID_MISMATCH');
+      expect(prepError.httpStatus).toBe(400);
+    }
+  });
+
   test('throws TRACE_ID_MISMATCH when requested persisted session belongs to another trace', () => {
     sessionPersistenceService.getSession.mockReturnValue({
       id: 'persisted-1',
@@ -631,6 +693,61 @@ describe('AgentAnalyzeSessionService session continuity', () => {
         providerId: null,
         runtimeOverride: 'openai-agents-sdk',
       }),
+    );
+  });
+
+  test('inherits reference trace identity from a persisted comparison snapshot', () => {
+    sessionPersistenceService.getSession.mockReturnValue({
+      id: 'persisted-compare-1',
+      traceId: 'trace-1',
+      question: 'q',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      metadata: {
+        referenceTraceId: 'ref-trace-1',
+      },
+      messages: [],
+    });
+    sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
+    sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({
+      version: 1,
+      snapshotTimestamp: Date.now(),
+      sessionId: 'persisted-compare-1',
+      traceId: 'trace-1',
+      referenceTraceId: 'ref-trace-1',
+      comparisonSource: 'raw_trace_pair',
+      conversationSteps: [],
+      queryHistory: [],
+      conclusionHistory: [],
+      agentDialogue: [],
+      agentResponses: [],
+      dataEnvelopes: [],
+      hypotheses: [],
+      analysisNotes: [],
+      analysisPlan: null,
+      planHistory: [],
+      uncertaintyFlags: [],
+      agentRuntimeKind: 'openai-agents-sdk',
+      agentRuntimeProviderId: null,
+      runSequence: 0,
+      conversationOrdinal: 0,
+    });
+
+    const prepared = service.prepareSession({
+      traceId: 'trace-1',
+      query: 'follow-up without explicit reference',
+      requestedSessionId: 'persisted-compare-1',
+      options: {},
+    });
+
+    const restoredOrchestrator = mockCreateAgentOrchestrator.mock.results[0]?.value as any;
+    expect(prepared.isNewSession).toBe(false);
+    expect(prepared.session.referenceTraceId).toBe('ref-trace-1');
+    expect(prepared.session.comparisonSource).toBe('raw_trace_pair');
+    expect(restoredOrchestrator.restoreFromSnapshot).toHaveBeenCalledWith(
+      'persisted-compare-1',
+      'trace-1',
+      expect.objectContaining({ referenceTraceId: 'ref-trace-1' }),
     );
   });
 });

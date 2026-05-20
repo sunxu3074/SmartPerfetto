@@ -357,3 +357,25 @@
 结论：
 
 - comparison run 已有可复用的结构化矩阵构建器，后续 API 可以把 snapshot 输入直接转成可报告、可给 AI 的矩阵。
+
+## M4.1 Raw Trace Comparison Session Continuity 闭环
+
+状态：完成。
+
+验收证据：
+
+- `SessionStateSnapshot` / `SessionFieldsForSnapshot` 持久化 `referenceTraceId`、`comparisonSource` 和共享 `comparisonReportSection`。
+- Claude Runtime 与 OpenAI Runtime 的 snapshot read/write 都使用 comparison session key：`sessionId:ref:<referenceTraceId>`。
+- `AgentAnalyzeSessionService.prepareSession()` 对 requested session 增加 comparison identity guard：
+  - 同 reference 可继续；
+  - 省略 reference 时继承已有 comparison identity；
+  - reference 不一致或把 single-trace session 升级成 raw compare 时返回 `REFERENCE_TRACE_ID_MISMATCH`。
+- HTTP `/api/agent/v1/analyze` 使用 prepared session 的 effective reference，恢复后的 comparison session 不会降级成 single-trace session。
+- Enterprise raw compare 下 current/reference 分别 acquire lease；reference lease 失败返回 `REFERENCE_TRACE_PROCESSOR_LEASE_UNAVAILABLE`，不启动半真分析。
+- CLI deterministic appendix 已从 CLI 私有实现迁移到共享 `comparisonAppendixService.ts`；HTTP raw compare report 也会写入同一个 `ComparisonReportSection`。
+- 前端 raw compare 进入/退出都会清理 `agentSessionId`，避免旧 comparison session 被复用为单 trace 会话；sessionStorage key 升级到 v2 并兼容读取 v1。
+- 验证：`npm --prefix backend run typecheck`，targeted runtime/session/CLI/report/comparison Jest，`cd perfetto/ui && npx tsc --noEmit`。
+
+结论：
+
+- raw trace pair 和 snapshot comparison 仍保留各自 API，但 raw compare 的 session identity、runtime resume、CLI/HTTP report section 已进入同一条可验证链路。

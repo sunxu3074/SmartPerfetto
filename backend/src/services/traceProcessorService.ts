@@ -64,6 +64,10 @@ export interface TraceProcessorLeaseQueryContext {
   leaseScope?: EnterpriseRepositoryScope;
 }
 
+interface TraceProcessorLeaseQueryContextMap {
+  traceLeases: Record<string, TraceProcessorLeaseQueryContext>;
+}
+
 export type TraceProcessorServiceQueryOptions = TraceProcessorQueryOptions & {
   leaseId?: string;
   leaseMode?: TraceProcessorLeaseMode | string;
@@ -93,10 +97,11 @@ export class TraceProcessorService extends EventEmitter {
   private recoveryInProgress: Map<string, Promise<TraceProcessor>> = new Map();
   /** Single lease supervisor per processor key; holders wait instead of retrying. */
   private leaseRestartInProgress: Map<string, Promise<TraceProcessor>> = new Map();
-  private readonly queryLeaseContext = new AsyncLocalStorage<TraceProcessorLeaseQueryContext>();
+  private readonly queryLeaseContext =
+    new AsyncLocalStorage<TraceProcessorLeaseQueryContext | TraceProcessorLeaseQueryContextMap>();
 
   constructor(
-    uploadDir = './uploads/traces',
+    uploadDir = resolveDefaultTraceUploadDir(),
     private readonly leaseRestartPolicy: TraceProcessorLeaseRestartPolicy = {},
   ) {
     super();
@@ -126,6 +131,19 @@ export class TraceProcessorService extends EventEmitter {
     return this.queryLeaseContext.run(context, fn);
   }
 
+  public runWithLeases<T>(
+    contexts: Array<TraceProcessorLeaseQueryContext | null | undefined>,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const traceLeases: Record<string, TraceProcessorLeaseQueryContext> = {};
+    for (const context of contexts) {
+      if (!context) continue;
+      traceLeases[context.traceId] = context;
+    }
+    if (Object.keys(traceLeases).length === 0) return fn();
+    return this.queryLeaseContext.run({ traceLeases }, fn);
+  }
+
   private resolveLeaseQueryContext(
     traceId: string,
     options: TraceProcessorServiceQueryOptions = {},
@@ -139,6 +157,9 @@ export class TraceProcessorService extends EventEmitter {
       };
     }
     const stored = this.queryLeaseContext.getStore();
+    if (stored && 'traceLeases' in stored) {
+      return stored.traceLeases[traceId];
+    }
     return stored?.traceId === traceId ? stored : undefined;
   }
 
@@ -971,6 +992,11 @@ export class TraceProcessorService extends EventEmitter {
     const lastAccess = trace.lastAccessTime?.getTime() ?? trace.uploadTime.getTime();
     return (now - lastAccess) <= idleTimeout;
   }
+}
+
+function resolveDefaultTraceUploadDir(): string {
+  const configured = process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR?.trim();
+  return configured || './uploads/traces';
 }
 
 // Singleton instance for sharing across route modules

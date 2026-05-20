@@ -69,6 +69,42 @@ describe('ProviderService', () => {
       expect(list[0].connection.claudeAuthToken).toMatch(/^\*{4}/);
       expect(list[0].connection.openaiApiKey).toMatch(/^\*{4}/);
     });
+
+    it('masks sensitive custom headers and env overrides in returned providers', () => {
+      const created = svc.create({
+        ...validInput,
+        type: 'custom',
+        connection: {
+          agentRuntime: 'openai-agents-sdk',
+          openaiBaseUrl: 'https://gateway.example/v1',
+          openaiProtocol: 'chat_completions',
+        },
+        custom: {
+          headers: {
+            Authorization: 'Bearer provider-secret-token',
+            'x-request-id': 'public-request-id',
+            'x-api-key': 'sk-header-secret123456',
+          },
+          envOverrides: {
+            OPENAI_API_KEY: 'sk-env-secret123456',
+            ANTHROPIC_AUTH_TOKEN: 'anthropic-token-123456',
+            OPENAI_BASE_URL: 'https://gateway.example/v1',
+          },
+        },
+      });
+
+      const listed = svc.list()[0];
+      const fetched = svc.get(created.id)!;
+
+      expect(listed.custom?.headers?.Authorization).toMatch(/^\*{4}/);
+      expect(listed.custom?.headers?.['x-api-key']).toMatch(/^\*{4}/);
+      expect(listed.custom?.headers?.['x-request-id']).toBe('public-request-id');
+      expect(listed.custom?.envOverrides?.OPENAI_API_KEY).toMatch(/^\*{4}/);
+      expect(listed.custom?.envOverrides?.ANTHROPIC_AUTH_TOKEN).toMatch(/^\*{4}/);
+      expect(listed.custom?.envOverrides?.OPENAI_BASE_URL).toBe('https://gateway.example/v1');
+      expect(fetched.custom?.envOverrides?.OPENAI_API_KEY).toMatch(/^\*{4}/);
+      expect(svc.getEnvForProvider(created.id)?.OPENAI_API_KEY).toBe('sk-env-secret123456');
+    });
   });
 
   describe('activate', () => {

@@ -49,7 +49,7 @@ export async function runListCommand(args: ListCommandArgs): Promise<number> {
   }
 
   if (entries.length === 0) {
-    console.log('(no sessions — run `smp -f <trace> -p "question"` to create one)');
+    console.log('(no sessions — run `smp run <trace> "question"` to create one)');
     return 0;
   }
 

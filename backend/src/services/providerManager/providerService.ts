@@ -60,8 +60,35 @@ function maskConnection(conn: ProviderConfig['connection']): ProviderConfig['con
   return masked;
 }
 
+function isSensitiveCustomKey(key: string): boolean {
+  return /(?:api[_-]?key|auth(?:orization)?|bearer|token|secret|password|access[_-]?key|session[_-]?token|credential)/i
+    .test(key);
+}
+
+function maskSensitiveRecordValues(record: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!record) return undefined;
+  const masked = { ...record };
+  for (const [key, value] of Object.entries(masked)) {
+    if (value && isSensitiveCustomKey(key)) masked[key] = maskValue(value);
+  }
+  return masked;
+}
+
+function maskCustom(custom: ProviderConfig['custom']): ProviderConfig['custom'] {
+  if (!custom) return undefined;
+  return {
+    ...custom,
+    headers: maskSensitiveRecordValues(custom.headers),
+    envOverrides: maskSensitiveRecordValues(custom.envOverrides),
+  };
+}
+
 function maskProvider(p: ProviderConfig): ProviderConfig {
-  return { ...p, connection: maskConnection(p.connection) };
+  return {
+    ...p,
+    connection: maskConnection(p.connection),
+    custom: maskCustom(p.custom),
+  };
 }
 
 function isSupportedRuntimeForProvider(type: ProviderType, runtime: AgentRuntimeKind): boolean {

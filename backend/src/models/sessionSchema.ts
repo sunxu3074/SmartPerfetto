@@ -38,6 +38,10 @@ export interface SessionMetadata {
   workspaceId?: string;
   userId?: string;
   ownerUserId?: string;
+  /** Raw dual-trace comparison identity, duplicated from sessionStateSnapshot for fast guards. */
+  referenceTraceId?: string;
+  /** Comparison source model used by the persisted session. */
+  comparisonSource?: import('../agentv3/sessionStateSnapshot').ComparisonSourceKind;
 
   totalIterations?: number;
   sqlQueriesCount?: number;

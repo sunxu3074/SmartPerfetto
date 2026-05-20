@@ -14,8 +14,10 @@
 import * as path from 'path';
 import { bootstrap } from '../bootstrap';
 import { CliAnalyzeService } from '../services/cliAnalyzeService';
-import { createRenderer } from '../repl/renderer';
+import { createRenderer, type OutputFormat } from '../repl/renderer';
 import { startSession } from '../services/turnRunner';
+import { assertAnalysisRuntimeReady } from '../services/runtimeGuard';
+import { withConsoleLogToStderr } from '../io/stdio';
 
 export interface AnalyzeCommandArgs {
   trace: string;
@@ -24,6 +26,7 @@ export interface AnalyzeCommandArgs {
   sessionDir?: string;
   verbose: boolean;
   noColor: boolean;
+  format?: OutputFormat;
 }
 
 export async function runAnalyzeCommand(args: AnalyzeCommandArgs): Promise<number> {
@@ -32,15 +35,20 @@ export async function runAnalyzeCommand(args: AnalyzeCommandArgs): Promise<numbe
   // which would otherwise change how a relative trace argument gets interpreted.
   const tracePath = path.resolve(args.trace);
   const { paths } = bootstrap({ envFile: args.envFile, sessionDir: args.sessionDir });
-  const renderer = createRenderer({ verbose: args.verbose, useColor: !args.noColor });
+  const renderer = createRenderer({ verbose: args.verbose, useColor: !args.noColor, format: args.format });
   const service = new CliAnalyzeService();
+  let exitCode = 0;
 
   try {
-    await startSession({ paths, service, renderer }, {
-      tracePath,
-      query: args.query,
+    await withConsoleLogToStderr(renderer.format !== 'text', async () => {
+      assertAnalysisRuntimeReady();
+      const turn = await startSession({ paths, service, renderer }, {
+        tracePath,
+        query: args.query,
+      });
+      exitCode = turn.success ? 0 : 1;
     });
-    return 0;
+    return exitCode;
   } catch (err) {
     renderer.printError((err as Error).message);
     return 1;

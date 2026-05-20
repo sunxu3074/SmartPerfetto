@@ -7,6 +7,8 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   assertValidSessionId,
+  computePaths,
+  ensureLayout,
   InvalidSessionIdError,
   sessionPaths,
 } from '../paths';
@@ -65,6 +67,7 @@ describe('sessionPaths', () => {
     paths = {
       home: tmpDir,
       sessionsRoot: path.join(tmpDir, 'sessions'),
+      tracesRoot: path.join(tmpDir, 'traces'),
       indexFile: path.join(tmpDir, 'index.json'),
     };
   });
@@ -79,6 +82,14 @@ describe('sessionPaths', () => {
     expect(sp.config).toBe(path.join(sp.dir, 'config.json'));
     expect(sp.report).toBe(path.join(sp.dir, 'report.html'));
     expect(sp.turnsDir).toBe(path.join(sp.dir, 'turns'));
+  });
+
+  test('computePaths and ensureLayout include CLI trace storage', () => {
+    const computed = computePaths(tmpDir);
+    expect(computed.tracesRoot).toBe(path.join(tmpDir, 'traces'));
+    ensureLayout(computed);
+    expect(fs.existsSync(computed.sessionsRoot)).toBe(true);
+    expect(fs.existsSync(computed.tracesRoot)).toBe(true);
   });
 
   test('throws on traversal attempt', () => {

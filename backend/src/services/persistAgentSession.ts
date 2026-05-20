@@ -55,6 +55,9 @@ export function persistAgentTurn(input: PersistAgentTurnInput): void {
 
     const snapshot = typeof session.orchestrator.takeSnapshot === 'function'
       ? session.orchestrator.takeSnapshot(sessionId, traceId, {
+          referenceTraceId: session.referenceTraceId,
+          comparisonSource: session.comparisonSource,
+          comparisonReportSection: session.comparisonReportSection,
           conversationSteps: session.conversationSteps || [],
           queryHistory: session.queryHistory || [],
           conclusionHistory: session.conclusionHistory || [],
@@ -122,6 +125,8 @@ export function persistAgentTurn(input: PersistAgentTurnInput): void {
             tenantId: session.tenantId,
             workspaceId: session.workspaceId,
             userId: session.userId,
+            referenceTraceId: session.referenceTraceId,
+            comparisonSource: session.comparisonSource,
           },
         });
       }

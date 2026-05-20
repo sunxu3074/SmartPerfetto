@@ -17,6 +17,7 @@ describe('indexJson', () => {
     paths = {
       home: tmpDir,
       sessionsRoot: path.join(tmpDir, 'sessions'),
+      tracesRoot: path.join(tmpDir, 'traces'),
       indexFile: path.join(tmpDir, 'index.json'),
     };
   });

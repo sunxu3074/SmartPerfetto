@@ -8,67 +8,146 @@ This file is part of SmartPerfetto. See LICENSE for details.
 
 [English](cli.en.md) | [中文](cli.md)
 
-The CLI is the terminal entry point for SmartPerfetto analysis. It does not start the Perfetto frontend or the Express HTTP server. It runs local trace analysis through the same runtime selection, tools, Skills, report generation, and persistence pipeline used by the web experience.
+SmartPerfetto CLI is the official terminal entry point. Use `smp` or
+`smartperfetto` to configure, diagnose, analyze traces, ask follow-up questions,
+run SQL, run Skills, export reports, and manage local history without starting
+the Web UI.
 
-## 1. Architecture
-
-The `@gracker/smartperfetto` npm package exposes the CLI entrypoint. The CLI reuses the same core backend modules as the web server:
-
-- `AgentAnalyzeSessionService.prepareSession()`
-- Claude Agent SDK or OpenAI Agents SDK runtime selection
-- Skill engine
-- HTML report generation
-- Session persistence
-- Trace processor service
-
-| Surface | Transport | Output |
-|---|---|---|
-| Web backend | Express routes + SSE | Browser panel and `/api/reports/` |
-| CLI | Local process calls | Terminal renderer and `~/.smartperfetto/` files |
-
-## 2. Install
+## Install
 
 ```bash
-# Requires Node.js 24 LTS
 npm install -g @gracker/smartperfetto
 ```
 
-The npm CLI package bundles pinned `trace_processor_shell` prebuilts for Linux
-x64, macOS arm64, and Windows x64. Unsupported platforms still download the
-pinned binary on first trace use. If the download bucket is blocked, set
-`TRACE_PROCESSOR_PATH`, `TRACE_PROCESSOR_DOWNLOAD_BASE`, or `TRACE_PROCESSOR_DOWNLOAD_URL`.
+Node.js 24 LTS is required. The npm CLI package bundles pinned
+`trace_processor_shell` prebuilts for Linux x64, macOS arm64, and Windows x64.
+On unsupported platforms the CLI downloads the pinned binary; if automatic
+download is unavailable, set `TRACE_PROCESSOR_PATH` to an existing local
+executable.
 
-## 3. Commands
+## Global Options
+
+```text
+Usage: smp [options] [command]
+
+Options:
+  -V, --version             output the version number
+  -f, --file <trace>        trace file to analyze (shortcut for `analyze <trace>`)
+  -p, --prompt <question>   analysis prompt (shortcut for --query)
+  -q, --query <question>    analysis question (alias for --prompt)
+  --session-dir <path>      override session storage root (default: ~/.smartperfetto)
+  --env-file <path>         path to .env file (default: backend/.env)
+  --verbose                 show verbose event stream
+  --no-color                disable ANSI colors
+  --resume <sessionId>      start the REPL with this session already loaded
+  -h, --help                display help for command
+```
+
+## Core Workflow
 
 ```bash
-smp -f trace.pftrace -p "Analyze scrolling jank"
-smp resume <sessionId> --query "Why is RenderThread slow?"
+smp run trace.perfetto-trace "Analyze why startup is slow"
+smp ask <sessionId> "Why is RenderThread slow?"
+smp repl --resume <sessionId>
+```
+
+Compatibility commands remain available:
+
+```bash
+smp analyze trace.perfetto-trace --query "Analyze why startup is slow"
+smp resume <sessionId> --query "Follow up"
 smp list
 smp show <sessionId>
 smp report <sessionId> --open
 smp rm <sessionId>
-smp
 ```
 
-`smartperfetto` remains available as the long command name. `smp` is the short alias.
+Analysis commands support machine-readable output:
 
-## 4. REPL
+```bash
+smp run trace.perfetto-trace "Analyze why startup is slow" --format json
+smp resume <sessionId> --query "Follow up" --format ndjson
+```
 
-| Command | Purpose |
-|---|---|
-| `/load <trace>` | Load a trace file |
-| `/ask <query>` | Ask a question against the loaded trace |
-| `/resume <sessionId>` | Resume an existing session |
-| `/report` | Open or print the latest report |
-| `/focus` | Show current focus/session state |
-| `/clear` | Clear terminal display |
-| `/exit` | Exit |
+Supported `--format` values: `text`, `json`, `ndjson`.
 
-## 5. Storage
+## Config And Providers
+
+```bash
+smp doctor --format text
+smp doctor --format json
+smp config init
+smp config init --force
+smp provider list
+smp provider list --format json
+smp provider test system
+smp provider test <providerId> --format json
+```
+
+Runtime checks follow the actually selected provider/runtime:
+
+- Claude Agent SDK accepts API keys, Anthropic-compatible proxies, Bedrock,
+  Vertex, and local Claude login fallback.
+- OpenAI Agents SDK requires `OPENAI_API_KEY` or a local
+  `localhost` / `127.0.0.1` / `0.0.0.0` OpenAI-compatible endpoint.
+- Ollama providers use the OpenAI-compatible runtime.
+
+The first CLI productization pass does not include `provider add/edit`; key
+writing needs a dedicated secure interaction design.
+
+## Trace Query And Skills
+
+```bash
+smp query trace.perfetto-trace --sql "select count(*) as cnt from slice"
+smp query trace.perfetto-trace --sql "select count(*) from slice" --format json
+
+smp skill trace.perfetto-trace startup_slow_reasons
+smp skill trace.perfetto-trace startup_slow_reasons --params '{"package":"com.example"}' --format json
+```
+
+`query` and `skill` do not start the Web UI. `skill` loads SmartPerfetto's YAML
+Skills and SQL fragments.
+
+## Trace Comparison
+
+```bash
+smp compare current.perfetto-trace reference.perfetto-trace --query "Compare startup differences"
+smp compare current.perfetto-trace reference.perfetto-trace --query "Compare jank root causes" --format ndjson
+```
+
+`compare` passes the second trace as the reference trace and enables dual-trace
+analysis tools in the AI runtime. The CLI automatically appends a deep
+comparison contract so reports include metric matrices, phase/hotspot deltas,
+blocking and scheduling differences, ruled-out system factors, evidence limits,
+and next steps instead of only a duration delta. The CLI also appends a
+deterministic SQL-generated comparison appendix covering package, Perfetto's
+raw startup_type, duration delta, startup-window top slices, and main-thread
+state distribution. The appendix treats startup_type as a raw Perfetto field,
+not a second CLI classification; cold/warm conflicts must be called out as
+evidence limits in the report body.
+
+## Reports And History
+
+```bash
+smp list
+smp list --json
+smp list --format json
+smp show <sessionId>
+smp report <sessionId>
+smp report <sessionId> --turn 1
+smp report <sessionId> --open
+smp report export <sessionId> --format html --out report.html
+smp report export <sessionId> --turn 1 --format html --out turn-001.html
+smp report export <sessionId> --format md --out report.md
+smp report export <sessionId> --format json --out report.json
+```
+
+CLI files are stored under:
 
 ```text
 ~/.smartperfetto/
 ├── index.json
+├── traces/
 └── sessions/<sessionId>/
     ├── config.json
     ├── conclusion.md
@@ -76,31 +155,36 @@ smp
     ├── transcript.jsonl
     ├── stream.jsonl
     └── turns/
+        ├── 001.md
+        └── 001.html
 ```
 
-The CLI session id remains stable across resume attempts. If SDK context cannot be restored, the CLI can fall back to a new backend/SDK session internally while continuing to write to the same local session folder.
+## Android Capture
 
-## 6. Resume Semantics
-
-| Level | Behavior |
-|---|---|
-| Level 1 | Reuse the persisted SDK session id and original trace id |
-| Level 2 | Rebuild local trace processor state, then resume the persisted SDK context |
-| Level 3 | Start a fresh SDK session and inject prior conclusion context as a preamble |
-
-Level 3 preserves the user-facing CLI session folder but updates the internal SDK session id.
-
-## 7. CI and Non-TTY Usage
+The first version supports only a locally connected adb device:
 
 ```bash
-smp analyze -f trace.pftrace -p "Analyze startup performance" --json
-smp report <sessionId> --path
+smp capture android --app com.example.app --duration 10 --out launch.perfetto-trace
+smp capture android --app com.example.app --duration 10 --serial <adbSerial> --out launch.perfetto-trace
 ```
 
-Do not rely on terminal-only rendering in CI. Prefer JSON or report-path output.
+Pass `--serial` when multiple devices are connected.
 
-## 8. Known Limits
+## REPL
 
-- The CLI still uses local trace_processor RPC ports `9100-9900`; "no HTTP server" means it does not expose the SmartPerfetto backend or Perfetto UI ports.
-- Provider credentials follow the same runtime rules as the backend. See [Configuration Guide](../getting-started/configuration.en.md).
-- Source checkout scripts are for maintainers debugging the package; normal users should install the npm package.
+```bash
+smp repl
+smp repl --resume <sessionId>
+```
+
+REPL commands:
+
+| Command | Purpose |
+| --- | --- |
+| `/load <trace>` | Load a trace and start analysis |
+| `/ask <query>` | Ask against the current session |
+| `/resume <sessionId>` | Switch to an existing session |
+| `/report` | Print the latest report path |
+| `/focus` | Show current session state |
+| `/clear` | Clear the terminal |
+| `/exit` | Exit |

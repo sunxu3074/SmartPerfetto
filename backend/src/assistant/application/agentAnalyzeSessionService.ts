@@ -13,6 +13,10 @@ import { getProviderService } from '../../services/providerManager';
 import { resolveProviderRuntimeSnapshot } from '../../services/providerManager/providerSnapshot';
 import type { AgentRuntimeKind, ProviderScope } from '../../services/providerManager';
 import { getTraceProcessorService } from '../../services/traceProcessorService';
+import type {
+  ComparisonReportSection,
+  ComparisonSourceKind,
+} from '../../agentv3/sessionStateSnapshot';
 import {
   type EnhancedSessionContext,
   sessionContextManager as defaultSessionContextManager,
@@ -73,6 +77,12 @@ export interface AnalyzeManagedSession extends ManagedAssistantSession {
   providerSnapshotHash?: string | null;
   providerSnapshotChanged?: boolean;
   providerSnapshotChangeReason?: string;
+  /** Reference trace ID for raw dual-trace comparison sessions. */
+  referenceTraceId?: string;
+  /** Comparison source model used by this session. */
+  comparisonSource?: ComparisonSourceKind;
+  /** Shared deterministic comparison section for report generation. */
+  comparisonReportSection?: ComparisonReportSection;
   logger: SessionLogger;
   result?: AgentRuntimeAnalysisResult;
   hypotheses: Hypothesis[];
@@ -111,6 +121,7 @@ interface PrepareAnalyzeSessionInput {
   traceId: string;
   query: string;
   requestedSessionId?: string;
+  referenceTraceId?: string;
   providerId?: string | null;
   providerScope?: ProviderScope;
   options?: any;
@@ -136,6 +147,47 @@ export class AnalyzeSessionPreparationError extends Error {
   }
 }
 
+function normalizeReferenceTraceId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function comparisonSourceForReference(referenceTraceId?: string): ComparisonSourceKind | undefined {
+  return referenceTraceId ? 'raw_trace_pair' : undefined;
+}
+
+function readPersistedReferenceTraceId(
+  stateSnapshot: { referenceTraceId?: string } | null | undefined,
+  metadata: { referenceTraceId?: unknown } | undefined,
+): string | undefined {
+  return normalizeReferenceTraceId(stateSnapshot?.referenceTraceId)
+    ?? normalizeReferenceTraceId(metadata?.referenceTraceId);
+}
+
+function assertReferenceTraceCompatible(input: {
+  requestedSessionId: string;
+  existingReferenceTraceId?: string;
+  requestedReferenceTraceId?: string;
+}): void {
+  const existingReferenceTraceId = normalizeReferenceTraceId(input.existingReferenceTraceId);
+  const requestedReferenceTraceId = normalizeReferenceTraceId(input.requestedReferenceTraceId);
+
+  if (existingReferenceTraceId && requestedReferenceTraceId && existingReferenceTraceId !== requestedReferenceTraceId) {
+    throw new AnalyzeSessionPreparationError('referenceTraceId mismatch for requested session', {
+      code: 'REFERENCE_TRACE_ID_MISMATCH',
+      httpStatus: 400,
+      hint: `This comparison session uses referenceTraceId=${existingReferenceTraceId}. Start a new chat to compare against a different reference trace.`,
+    });
+  }
+
+  if (!existingReferenceTraceId && requestedReferenceTraceId) {
+    throw new AnalyzeSessionPreparationError('referenceTraceId mismatch for requested session', {
+      code: 'REFERENCE_TRACE_ID_MISMATCH',
+      httpStatus: 400,
+      hint: 'This session was created for single-trace analysis. Start a new chat to run raw trace comparison.',
+    });
+  }
+}
+
 export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> {
   private readonly assistantAppService: AssistantApplicationService<TSession>;
   private readonly createSessionLogger: (sessionId: string) => SessionLogger;
@@ -157,6 +209,8 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
   prepareSession(input: PrepareAnalyzeSessionInput): PrepareAnalyzeSessionResult<TSession> {
     const { traceId, query, requestedSessionId, options = {} } = input;
     const providerScope = input.providerScope;
+    const requestedReferenceTraceId = normalizeReferenceTraceId(input.referenceTraceId ?? options.referenceTraceId);
+    let inheritedReferenceTraceId: string | undefined;
     const explicitProviderId = input.providerId !== undefined
       ? input.providerId
       : options.providerId as string | null | undefined;
@@ -183,6 +237,14 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
 
     if (requestedSessionId) {
       const existingSession = this.assistantAppService.getSession(requestedSessionId);
+      if (existingSession && existingSession.traceId === traceId) {
+        assertReferenceTraceCompatible({
+          requestedSessionId,
+          existingReferenceTraceId: existingSession.referenceTraceId,
+          requestedReferenceTraceId,
+        });
+        inheritedReferenceTraceId = normalizeReferenceTraceId(existingSession.referenceTraceId);
+      }
       const liveSessionProviderId = existingSession && existingSession.traceId === traceId
         ? explicitProviderId !== undefined
           ? explicitProviderId
@@ -230,6 +292,8 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
           existingSession.providerSnapshotHash = liveSessionProviderSnapshotHash;
           existingSession.providerSnapshotChanged = true;
           existingSession.providerSnapshotChangeReason = 'provider_snapshot_hash_mismatch';
+          existingSession.referenceTraceId = requestedReferenceTraceId ?? inheritedReferenceTraceId;
+          existingSession.comparisonSource = comparisonSourceForReference(existingSession.referenceTraceId);
           existingSession.runSequence = Number.isFinite(existingSession.runSequence)
             ? Math.max(0, Math.floor(existingSession.runSequence as number))
             : 0;
@@ -248,10 +312,13 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
             isNewSession: false,
           };
         } else {
+          const effectiveReferenceTraceId = requestedReferenceTraceId ?? inheritedReferenceTraceId;
           existingSession.providerId ??= null;
           existingSession.providerSnapshotHash ??= liveSessionProviderSnapshotHash;
           existingSession.providerSnapshotChanged = false;
           existingSession.providerSnapshotChangeReason = undefined;
+          existingSession.referenceTraceId = effectiveReferenceTraceId;
+          existingSession.comparisonSource = comparisonSourceForReference(effectiveReferenceTraceId);
           existingSession.runSequence = Number.isFinite(existingSession.runSequence)
             ? Math.max(0, Math.floor(existingSession.runSequence as number))
             : 0;
@@ -283,12 +350,22 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
       }
 
       if (persistedSession && persistedSession.traceId === traceId) {
+        const stateSnapshot =
+          this.sessionPersistenceService.loadSessionStateSnapshot(requestedSessionId);
+        const persistedReferenceTraceId = readPersistedReferenceTraceId(
+          stateSnapshot,
+          persistedSession.metadata,
+        );
+        assertReferenceTraceCompatible({
+          requestedSessionId,
+          existingReferenceTraceId: persistedReferenceTraceId,
+          requestedReferenceTraceId,
+        });
+        inheritedReferenceTraceId = persistedReferenceTraceId;
         const restoredContext = this.sessionPersistenceService.loadSessionContext(requestedSessionId);
         if (restoredContext) {
           this.sessionContextManager.set(requestedSessionId, traceId, restoredContext);
 
-          const stateSnapshot =
-            this.sessionPersistenceService.loadSessionStateSnapshot(requestedSessionId);
           const snapshotProviderId = stateSnapshot?.agentRuntimeProviderId;
           const restoredProviderId = explicitProviderId !== undefined
             ? explicitProviderId
@@ -390,6 +467,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
               query,
               architecture: 'agent-driven',
               resumed: true,
+              referenceTraceId: requestedReferenceTraceId ?? inheritedReferenceTraceId,
             });
             restoredLogger.info('AgentRoutes', 'Session restored from persistence in analyze()', {
               turnCount: restoredTurns.length,
@@ -428,6 +506,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
             // > runtimeArrays (legacy fallback) > reconstructed from turns.
             // agentDialogue + agentResponses live only in the snapshot — prior
             // code hardcoded them to [], which is what Codex flagged as lost state.
+            const effectiveReferenceTraceId = requestedReferenceTraceId ?? inheritedReferenceTraceId;
             const restoredSession = {
               orchestrator: restoredOrchestrator,
               sessionId: requestedSessionId,
@@ -445,6 +524,11 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
               providerSnapshotChangeReason: snapshotProviderHashMismatch
                 ? 'provider_snapshot_hash_mismatch'
                 : undefined,
+              referenceTraceId: effectiveReferenceTraceId,
+              comparisonSource:
+                stateSnapshot?.comparisonSource
+                ?? comparisonSourceForReference(effectiveReferenceTraceId),
+              comparisonReportSection: stateSnapshot?.comparisonReportSection,
               createdAt: persistedSession.createdAt,
               lastActivityAt: Date.now(),
               logger: restoredLogger,
@@ -497,6 +581,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
       }
     }
 
+    const effectiveReferenceTraceId = requestedReferenceTraceId ?? inheritedReferenceTraceId;
     const sessionId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const orchestrator: IOrchestrator = createAgentOrchestrator({
       traceProcessorService: getTraceProcessorService(),
@@ -505,7 +590,12 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
     });
 
     const logger = this.createSessionLogger(sessionId);
-    logger.setMetadata({ traceId, query, architecture: 'agent-driven' });
+    logger.setMetadata({
+      traceId,
+      query,
+      architecture: 'agent-driven',
+      referenceTraceId: effectiveReferenceTraceId,
+    });
     logger.info('AgentRoutes', 'Agent-driven analysis session created', { options });
 
     const session = {
@@ -518,6 +608,8 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
       providerId: sessionProviderId,
       providerSnapshotHash: sessionProviderSnapshotHash,
       providerSnapshotChanged: false,
+      referenceTraceId: effectiveReferenceTraceId,
+      comparisonSource: comparisonSourceForReference(effectiveReferenceTraceId),
       createdAt: Date.now(),
       lastActivityAt: Date.now(),
       logger,

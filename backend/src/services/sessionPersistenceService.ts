@@ -676,6 +676,8 @@ export class SessionPersistenceService {
 
       // Write new snapshot
       metadata.sessionStateSnapshot = snapshot;
+      metadata.referenceTraceId = snapshot.referenceTraceId;
+      metadata.comparisonSource = snapshot.comparisonSource;
 
       // Backward-compat dual-write: also populate runtimeArraysSnapshot
       metadata.runtimeArraysSnapshot = {

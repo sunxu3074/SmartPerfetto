@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 /**
- * CLI bootstrap: env loading + path layout + API key validation.
+ * CLI bootstrap: env loading + path layout.
  *
  * Invariant: callers must await `bootstrap()` once before any CLI command
  * performs work. Idempotent within a process — safe to call twice.
@@ -20,14 +20,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { computePaths, ensureLayout, type CliPaths } from './io/paths';
-import { hasClaudeCredentials } from '../agentv3/claudeConfig';
 
 export interface BootstrapOptions {
   envFile?: string;
   sessionDir?: string;
-  /** When false, skip the Anthropic credential check so
-   *  purely-local commands (`list`, `show`, `report`, `rm`) stay usable
-   *  before the user has configured LLM credentials. Defaults to true. */
+  /** @deprecated Runtime credential checks are command-specific now. */
   requireLlm?: boolean;
 }
 
@@ -36,11 +33,8 @@ export interface BootstrapResult {
 }
 
 let memoizedResult: BootstrapResult | null = null;
-let llmCredentialsVerified = false;
 
 export function bootstrap(options: BootstrapOptions = {}): BootstrapResult {
-  const requireLlm = options.requireLlm !== false;
-
   if (!memoizedResult) {
     // Resolve any user-relative paths *before* chdir — otherwise a relative
     // --session-dir or --env-file would reanchor to the backend root.
@@ -57,36 +51,35 @@ export function bootstrap(options: BootstrapOptions = {}): BootstrapResult {
     if (backendRoot && process.cwd() !== backendRoot) {
       process.chdir(backendRoot);
     }
-    loadEnv(envFile);
+    loadEnv(envFile, sessionDir);
     const paths = computePaths(sessionDir);
     // Keep helper services that read SMARTPERFETTO_HOME directly (for example
     // the CLI-managed trace_processor_shell cache) aligned with --session-dir.
     process.env.SMARTPERFETTO_HOME = paths.home;
+    // Keep CLI trace copies inside the same user-selected home. The web server
+    // keeps its historical ./uploads/traces default because it does not call
+    // this bootstrap path.
+    if (!process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR?.trim()) {
+      process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR = paths.tracesRoot;
+    }
     ensureLayout(paths);
     memoizedResult = { paths };
-  }
-
-  // Credentials check is separate from the memoization guard: a process
-  // might first hit `bootstrap({requireLlm:false})` (list) and later an
-  // LLM-using path — the second call must still enforce the check.
-  if (requireLlm && !llmCredentialsVerified) {
-    assertLlmCredentials();
-    llmCredentialsVerified = true;
   }
 
   return memoizedResult;
 }
 
 /**
- * Load env from (in order, first wins):
+ * Load env from (in order, later files override earlier files):
  *   1. --env-file argument
  *   2. backend/.env relative to this compiled file
- *   3. ~/.smartperfetto/env
+ *   3. <resolved CLI home>/env (`--session-dir`, SMARTPERFETTO_HOME, or
+ *      ~/.smartperfetto)
  *
  * Missing files are silently skipped; only an explicitly-passed --env-file
  * is required to exist.
  */
-function loadEnv(explicitFile?: string): void {
+function loadEnv(explicitFile?: string, sessionDir?: string): void {
   if (explicitFile) {
     const resolved = path.resolve(explicitFile);
     if (!fs.existsSync(resolved)) {
@@ -105,8 +98,12 @@ function loadEnv(explicitFile?: string): void {
     if (fs.existsSync(envPath)) dotenv.config({ path: envPath, quiet: true, override: true });
   }
 
-  // Last chance: user-level override.
-  const userEnv = path.join(process.env.HOME || '', '.smartperfetto', 'env');
+  // Last chance: user-level override. Keep this aligned with computePaths()
+  // so `smp --session-dir X config init` creates the file later runs read.
+  const cliHome = sessionDir
+    ?? (process.env.SMARTPERFETTO_HOME?.trim() ? path.resolve(process.env.SMARTPERFETTO_HOME) : undefined)
+    ?? path.join(process.env.HOME || '', '.smartperfetto');
+  const userEnv = path.join(cliHome, 'env');
   if (fs.existsSync(userEnv)) dotenv.config({ path: userEnv, quiet: true, override: true });
 }
 
@@ -147,16 +144,5 @@ function isSmartPerfettoPackage(pkg: any): boolean {
   return hasCliBin && (
     pkg.name === '@gracker/smartperfetto' ||
     pkg.name === 'smart-perfetto-backend'
-  );
-}
-
-function assertLlmCredentials(): void {
-  if (hasClaudeCredentials()) return;
-  throw new Error(
-    [
-      'Missing Claude credentials.',
-      'Set ANTHROPIC_API_KEY, or ANTHROPIC_BASE_URL plus ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN, or envs for AWS Bedrock before running.',
-      'The CLI reads backend/.env by default; pass --env-file <path> to override.',
-    ].join(' '),
   );
 }

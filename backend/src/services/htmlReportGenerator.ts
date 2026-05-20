@@ -30,6 +30,7 @@ import {
 } from '../types/dataContract';
 import { REPORT_CAUSAL_MAP_CSS, REPORT_CAUSAL_MAP_SCRIPT } from './reportCausalMapAssets';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
+import type { ComparisonReportSection } from '../agentv3/sessionStateSnapshot';
 
 interface ClaimSourceLookupEntry {
   label: string;
@@ -146,6 +147,8 @@ export interface AgentDrivenReportData {
   analysisPlan?: { phases: Array<{ name: string; goal?: string; status: string; summary?: string }> ; successCriteria: string } | null;
   /** P1-R3: Uncertainty flags from flag_uncertainty MCP tool */
   uncertaintyFlags?: Array<{ topic: string; assumption: string; question: string }>;
+  /** Shared deterministic comparison section for raw or snapshot comparison reports. */
+  comparisonReportSection?: ComparisonReportSection;
 }
 
 export class HTMLReportGenerator {
@@ -4446,6 +4449,8 @@ export class HTMLReportGenerator {
 
     ${this.renderConversationTimelineSection(normalizedConversationTimeline, outputLanguage)}
 
+    ${this.renderComparisonReportSection(data.comparisonReportSection)}
+
     ${this.renderDataEnvelopesSection(dataEnvelopes, traceStartNs, outputLanguage)}
 
     ${this.renderFindingsSection(result.findings, dataEnvelopes)}
@@ -5053,6 +5058,19 @@ export class HTMLReportGenerator {
     return value
       .map(item => this.asReportRecord(item))
       .filter((item): item is Record<string, unknown> => Boolean(item));
+  }
+
+  private renderComparisonReportSection(section?: ComparisonReportSection): string {
+    if (!section) return '';
+    if (section.html && section.html.trim()) return section.html;
+    if (!section.markdown) return '';
+    return `
+    <div class="section">
+      <h2 class="section-title">${this.escapeHtml(section.title || 'Comparison Evidence')}</h2>
+      <div class="answer-box">
+        ${this.formatAnswer(section.markdown)}
+      </div>
+    </div>`;
   }
 
   /**

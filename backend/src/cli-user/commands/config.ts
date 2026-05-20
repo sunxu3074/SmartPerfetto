@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2024-2026 Gracker (Chris)
+// This file is part of SmartPerfetto. See LICENSE for details.
+
+import * as fs from 'fs';
+import * as path from 'path';
+import { bootstrap } from '../bootstrap';
+import type { OutputFormat } from '../repl/renderer';
+
+export interface ConfigInitCommandArgs {
+  envFile?: string;
+  sessionDir?: string;
+  force: boolean;
+  format?: OutputFormat;
+}
+
+const ENV_TEMPLATE = `# SmartPerfetto CLI user environment
+# This file is loaded after backend/.env when no --env-file is passed.
+
+# Default runtime keeps Claude Agent SDK behavior. Claude local login fallback
+# is valid when no explicit Anthropic/Bedrock/Vertex credentials are set.
+# Leave model envs unset to use SmartPerfetto defaults, or set provider-specific
+# model names when your provider requires them.
+# SMARTPERFETTO_AGENT_RUNTIME=claude-agent-sdk
+# CLAUDE_MODEL=
+# CLAUDE_LIGHT_MODEL=
+# ANTHROPIC_API_KEY=
+# ANTHROPIC_BASE_URL=
+# ANTHROPIC_AUTH_TOKEN=
+
+# OpenAI / OpenAI-compatible runtime.
+# SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk
+# OPENAI_API_KEY=
+# OPENAI_BASE_URL=https://api.openai.com/v1
+# OPENAI_MODEL=
+# OPENAI_LIGHT_MODEL=
+# OPENAI_AGENTS_PROTOCOL=responses
+
+# Ollama / local OpenAI-compatible endpoint example.
+# SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk
+# OPENAI_BASE_URL=http://localhost:11434/v1
+# OPENAI_API_KEY=ollama
+# OPENAI_MODEL=qwen3:8b
+# OPENAI_AGENTS_PROTOCOL=chat_completions
+
+# Output language for AI analysis.
+# SMARTPERFETTO_OUTPUT_LANGUAGE=zh
+`;
+
+export async function runConfigInitCommand(args: ConfigInitCommandArgs): Promise<number> {
+  const { paths } = bootstrap({ envFile: args.envFile, sessionDir: args.sessionDir, requireLlm: false });
+  const envPath = path.join(paths.home, 'env');
+  const format = args.format ?? 'text';
+
+  if (fs.existsSync(envPath) && !args.force) {
+    writeOutput(format, {
+      ok: false,
+      path: envPath,
+      error: 'config already exists; pass --force to overwrite',
+    });
+    return 1;
+  }
+
+  fs.mkdirSync(paths.home, { recursive: true });
+  fs.writeFileSync(envPath, ENV_TEMPLATE, { encoding: 'utf-8', mode: 0o600 });
+
+  writeOutput(format, {
+    ok: true,
+    path: envPath,
+    overwritten: args.force,
+  });
+  return 0;
+}
+
+function writeOutput(format: OutputFormat, payload: Record<string, unknown>): void {
+  if (format === 'json' || format === 'ndjson') {
+    console.log(JSON.stringify(payload, null, format === 'json' ? 2 : 0));
+    return;
+  }
+  if (payload.ok) {
+    console.log(`Created SmartPerfetto CLI config: ${payload.path}`);
+  } else {
+    console.error(`Error: ${payload.error}`);
+    console.error(`Path: ${payload.path}`);
+  }
+}

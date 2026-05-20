@@ -563,8 +563,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   }
 
   /** Get SDK session ID for persistence. */
-  getSdkSessionId(smartPerfettoSessionId: string): string | undefined {
-    const entry = this.sessionMap.get(smartPerfettoSessionId);
+  getSdkSessionId(smartPerfettoSessionId: string, referenceTraceId?: string): string | undefined {
+    const entry = this.sessionMap.get(this.buildSessionMapKey(smartPerfettoSessionId, referenceTraceId));
     return isFreshFullSdkSessionEntry(entry) ? entry.sdkSessionId : undefined;
   }
 
@@ -2320,7 +2320,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const flags = this.sessionUncertaintyFlags.get(sessionId) || [];
     const artifactStore = this.artifactStores.get(sessionId);
     const architecture = this.architectureCache.get(traceId);
-    const sessionMapEntry = this.sessionMap.get(sessionId);
+    const sessionMapEntry = this.sessionMap.get(
+      this.buildSessionMapKey(sessionId, sessionFields.referenceTraceId),
+    );
     const sdkSessionId = isFreshFullSdkSessionEntry(sessionMapEntry)
       ? sessionMapEntry.sdkSessionId
       : undefined;
@@ -2392,7 +2394,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     }
 
     if (snapshot.sdkSessionId && snapshot.sdkSessionMode === 'full') {
-      this.sessionMap.set(sessionId, {
+      this.sessionMap.set(this.buildSessionMapKey(sessionId, snapshot.referenceTraceId), {
         sdkSessionId: snapshot.sdkSessionId,
         updatedAt: snapshot.snapshotTimestamp || Date.now(),
         mode: 'full',

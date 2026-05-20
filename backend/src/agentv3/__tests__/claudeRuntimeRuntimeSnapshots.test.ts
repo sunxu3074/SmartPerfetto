@@ -239,6 +239,47 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     }));
   });
 
+  it('restores full-mode comparison snapshot SDK mappings under the comparison key', () => {
+    const runtime = new ClaudeRuntime({} as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    const snapshotTimestamp = Date.now() - (30 * 60 * 1000);
+
+    runtime.restoreFromSnapshot('session-a', 'trace-a', {
+      version: 1,
+      snapshotTimestamp,
+      sessionId: 'session-a',
+      traceId: 'trace-a',
+      referenceTraceId: 'trace-b',
+      comparisonSource: 'raw_trace_pair',
+      conversationSteps: [],
+      queryHistory: [],
+      conclusionHistory: [],
+      agentDialogue: [],
+      agentResponses: [],
+      dataEnvelopes: [],
+      hypotheses: [],
+      analysisNotes: [],
+      analysisPlan: null,
+      planHistory: [],
+      uncertaintyFlags: [],
+      sdkSessionId: 'sdk-session-compare',
+      sdkSessionMode: 'full',
+      runSequence: 0,
+      conversationOrdinal: 0,
+    });
+
+    expect((runtime as any).sessionMap.get('session-a')).toBeUndefined();
+    expect((runtime as any).sessionMap.get('session-a:ref:trace-b')).toEqual(expect.objectContaining({
+      sdkSessionId: 'sdk-session-compare',
+      updatedAt: snapshotTimestamp,
+      mode: 'full',
+    }));
+    expect(runtime.getSdkSessionId('session-a', 'trace-b')).toBe('sdk-session-compare');
+  });
+
+
   it('does not restore legacy unmarked SDK mappings from snapshots', () => {
     const runtime = new ClaudeRuntime({} as any, {
       enableVerification: false,
@@ -328,6 +369,43 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       });
 
       expect(snapshot.sdkSessionId).toBe('sdk-session-fresh');
+      expect(snapshot.sdkSessionMode).toBe('full');
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('persists fresh comparison SDK session mappings into snapshots', () => {
+    const now = 1_700_000_000_000;
+    const runtime = new ClaudeRuntime({} as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    (runtime as any).sessionMap.set('session-a:ref:trace-b', {
+      sdkSessionId: 'sdk-session-compare',
+      updatedAt: now - (30 * 60 * 1000),
+      mode: 'full',
+    });
+
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const snapshot = runtime.takeSnapshot('session-a', 'trace-a', {
+        referenceTraceId: 'trace-b',
+        comparisonSource: 'raw_trace_pair',
+        conversationSteps: [],
+        queryHistory: [],
+        conclusionHistory: [],
+        agentDialogue: [],
+        agentResponses: [],
+        dataEnvelopes: [],
+        hypotheses: [],
+        runSequence: 0,
+        conversationOrdinal: 0,
+      });
+
+      expect(snapshot.referenceTraceId).toBe('trace-b');
+      expect(snapshot.comparisonSource).toBe('raw_trace_pair');
+      expect(snapshot.sdkSessionId).toBe('sdk-session-compare');
       expect(snapshot.sdkSessionMode).toBe('full');
     } finally {
       nowSpy.mockRestore();

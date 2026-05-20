@@ -19,6 +19,22 @@ import type { StreamingUpdate } from '../../agent/types';
 export interface RendererOptions {
   verbose: boolean;
   useColor: boolean;
+  format?: OutputFormat;
+}
+
+export type OutputFormat = 'text' | 'json' | 'ndjson';
+export type TextJsonFormat = Extract<OutputFormat, 'text' | 'json'>;
+
+export function parseOutputFormat(value: string | undefined): OutputFormat {
+  if (!value || value === 'text') return 'text';
+  if (value === 'json' || value === 'ndjson') return value;
+  throw new Error(`Invalid --format value: ${value}. Expected text, json, or ndjson.`);
+}
+
+export function parseTextJsonFormat(value: string | undefined): TextJsonFormat {
+  if (!value || value === 'text') return 'text';
+  if (value === 'json') return value;
+  throw new Error(`Invalid --format value: ${value}. Expected text or json.`);
 }
 
 /** Minimal ANSI color helper. Stays in-file so we don't pull in chalk. */
@@ -27,16 +43,20 @@ function ansi(code: string, on: boolean): (s: string) => string {
 }
 
 export interface Renderer {
+  format: OutputFormat;
   onEvent(update: StreamingUpdate): void;
   /** Called once after the SDK result arrives — prints the conclusion block. */
   printConclusion(conclusion: string, meta: { confidence?: number; rounds?: number; durationMs?: number }): void;
   /** Called on fatal errors that abort the run. */
   printError(message: string): void;
   /** Called last to summarize report path + any diagnostics. */
-  printCompletion(meta: { reportPath: string; sessionDir: string; sessionId: string }): void;
+  printCompletion(meta: { reportPath: string; turnReportPath?: string; sessionDir: string; sessionId: string; success?: boolean }): void;
 }
 
 export function createRenderer(opts: RendererOptions): Renderer {
+  const format = opts.format ?? 'text';
+  if (format !== 'text') return createMachineRenderer(format);
+
   const useColor = opts.useColor && Boolean(process.stdout.isTTY);
   const dim = ansi('2', useColor);
   const cyan = ansi('36', useColor);
@@ -153,13 +173,84 @@ export function createRenderer(opts: RendererOptions): Renderer {
     console.error(red(`\n✗ ${message}`));
   }
 
-  function printCompletion(meta: { reportPath: string; sessionDir: string; sessionId: string }): void {
+  function printCompletion(meta: { reportPath: string; turnReportPath?: string; sessionDir: string; sessionId: string; success?: boolean }): void {
     closeAnswerStream();
     console.log(`\n${green('✓')} session ${bold(meta.sessionId)}`);
     console.log(`  ${dim('dir:')}    ${meta.sessionDir}`);
     console.log(`  ${dim('report:')} ${meta.reportPath}`);
-    console.log(dim(`\n  open ${meta.reportPath}  ·  smp resume ${meta.sessionId}`));
+    if (meta.turnReportPath) {
+      console.log(`  ${dim('turn:')}   ${meta.turnReportPath}`);
+    }
+    console.log(dim(`\n  open ${meta.reportPath}  ·  smp ask ${meta.sessionId} "..."  ·  smp repl --resume ${meta.sessionId}`));
   }
 
-  return { onEvent, printConclusion, printError, printCompletion };
+  return { format, onEvent, printConclusion, printError, printCompletion };
+}
+
+function createMachineRenderer(format: 'json' | 'ndjson'): Renderer {
+  let conclusionPayload: {
+    conclusion: string;
+    confidence?: number;
+    rounds?: number;
+    durationMs?: number;
+  } | null = null;
+
+  function emit(obj: Record<string, unknown>, stream: NodeJS.WriteStream = process.stdout): void {
+    stream.write(`${JSON.stringify(obj)}\n`);
+  }
+
+  function onEvent(update: StreamingUpdate): void {
+    if (format !== 'ndjson') return;
+    emit({
+      type: 'event',
+      eventType: update.type,
+      content: update.content ?? {},
+    });
+  }
+
+  function printConclusion(
+    conclusion: string,
+    meta: { confidence?: number; rounds?: number; durationMs?: number },
+  ): void {
+    conclusionPayload = { conclusion, ...meta };
+    if (format === 'ndjson') {
+      emit({
+        type: 'conclusion',
+        ...conclusionPayload,
+      });
+    }
+  }
+
+  function printError(message: string): void {
+    emit({
+      ok: false,
+      type: 'error',
+      error: message,
+    }, process.stderr);
+  }
+
+  function printCompletion(meta: { reportPath: string; turnReportPath?: string; sessionDir: string; sessionId: string; success?: boolean }): void {
+    if (format === 'ndjson') {
+      emit({
+        ok: meta.success !== false,
+        type: 'complete',
+        sessionId: meta.sessionId,
+        sessionDir: meta.sessionDir,
+        reportPath: meta.reportPath,
+        ...(meta.turnReportPath ? { turnReportPath: meta.turnReportPath } : {}),
+      });
+      return;
+    }
+
+    emit({
+      ok: meta.success !== false,
+      sessionId: meta.sessionId,
+      sessionDir: meta.sessionDir,
+      reportPath: meta.reportPath,
+      ...(meta.turnReportPath ? { turnReportPath: meta.turnReportPath } : {}),
+      ...(conclusionPayload ?? { conclusion: '' }),
+    });
+  }
+
+  return { format, onEvent, printConclusion, printError, printCompletion };
 }

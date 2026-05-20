@@ -261,13 +261,14 @@ SmartPerfetto also ships a terminal CLI for trace analysis without opening the b
 npm install -g @gracker/smartperfetto
 
 # Analyze a trace, then continue the conversation or open the report.
-smp -f trace.pftrace -p "Analyze scrolling jank"
-smp resume <sessionId> --query "Why is RenderThread slow?"
+smp doctor
+smp run trace.pftrace "Analyze scrolling jank"
+smp ask <sessionId> "Why is RenderThread slow?"
 smp list
 smp report <sessionId> --open
 
-# Or run an interactive Claude-Code-style REPL.
-smp
+# Or run the interactive SmartPerfetto REPL.
+smp repl
 ```
 
 The first analysis downloads the pinned `trace_processor_shell` binary automatically if it is not already available. If your network cannot reach Google's artifact bucket, set `TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell` to use a local binary, or set `TRACE_PROCESSOR_DOWNLOAD_BASE` / `TRACE_PROCESSOR_DOWNLOAD_URL` to a trusted mirror; downloaded binaries are still checked against the pinned SHA256. `smartperfetto` remains available as the long command name; source checkout scripts are only for maintainers debugging the CLI. See [CLI Reference](docs/reference/cli.en.md) for all commands, REPL slash commands, storage layout, and resume behavior.

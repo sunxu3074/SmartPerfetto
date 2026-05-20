@@ -25,6 +25,17 @@ import type { StoredArtifact } from './artifactStore';
 import type { ArchitectureInfo } from '../agent/detectors/types';
 import type { DataEnvelope } from '../types/dataContract';
 
+export type ComparisonSourceKind = 'raw_trace_pair' | 'analysis_result_snapshots';
+
+export interface ComparisonReportSection {
+  source: ComparisonSourceKind;
+  title: string;
+  markdown: string;
+  html: string;
+  limitations?: string[];
+  evidencePack?: unknown;
+}
+
 // =============================================================================
 // Typed sub-interfaces — replace inline anonymous types from AnalysisSession
 // =============================================================================
@@ -92,6 +103,10 @@ export interface SessionStateSnapshot {
   traceId: string;
   /** Reference trace ID for comparison mode — enables session restoration in dual-trace context */
   referenceTraceId?: string;
+  /** Source model for comparison mode. Raw dual-trace sessions use raw_trace_pair. */
+  comparisonSource?: ComparisonSourceKind;
+  /** Shared deterministic comparison section used by CLI and HTML reports. */
+  comparisonReportSection?: ComparisonReportSection;
 
   // --- Timeline & History ---
   conversationSteps: ConversationStep[];
@@ -169,6 +184,12 @@ export interface SessionStateSnapshot {
  * that live in the AnalysisSession object.
  */
 export interface SessionFieldsForSnapshot {
+  /** Reference trace ID for comparison mode session identity. */
+  referenceTraceId?: string;
+  /** Source model for comparison mode. */
+  comparisonSource?: ComparisonSourceKind;
+  /** Shared deterministic comparison report section, when available. */
+  comparisonReportSection?: ComparisonReportSection;
   conversationSteps: ConversationStep[];
   queryHistory: QueryHistoryEntry[];
   conclusionHistory: ConclusionHistoryEntry[];

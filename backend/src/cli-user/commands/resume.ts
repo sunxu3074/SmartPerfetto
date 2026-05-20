@@ -12,8 +12,11 @@
 
 import { bootstrap } from '../bootstrap';
 import { CliAnalyzeService } from '../services/cliAnalyzeService';
-import { createRenderer } from '../repl/renderer';
+import { createRenderer, type OutputFormat } from '../repl/renderer';
 import { continueSession } from '../services/turnRunner';
+import { assertAnalysisRuntimeReady } from '../services/runtimeGuard';
+import { withConsoleLogToStderr } from '../io/stdio';
+import { loadSession } from '../io/sessionStore';
 
 export interface ResumeCommandArgs {
   sessionId: string;
@@ -22,19 +25,28 @@ export interface ResumeCommandArgs {
   sessionDir?: string;
   verbose: boolean;
   noColor: boolean;
+  format?: OutputFormat;
 }
 
 export async function runResumeCommand(args: ResumeCommandArgs): Promise<number> {
   const { paths } = bootstrap({ envFile: args.envFile, sessionDir: args.sessionDir });
-  const renderer = createRenderer({ verbose: args.verbose, useColor: !args.noColor });
+  const renderer = createRenderer({ verbose: args.verbose, useColor: !args.noColor, format: args.format });
   const service = new CliAnalyzeService();
+  let exitCode = 0;
 
   try {
-    await continueSession({ paths, service, renderer }, {
-      sessionId: args.sessionId,
-      query: args.query,
+    await withConsoleLogToStderr(renderer.format !== 'text', async () => {
+      const { config } = loadSession(paths, args.sessionId);
+      assertAnalysisRuntimeReady(config
+        ? { providerId: config.providerId, runtimeOverride: config.agentRuntimeKind }
+        : {});
+      const turn = await continueSession({ paths, service, renderer }, {
+        sessionId: args.sessionId,
+        query: args.query,
+      });
+      exitCode = turn.success ? 0 : 1;
     });
-    return 0;
+    return exitCode;
   } catch (err) {
     renderer.printError((err as Error).message);
     return 1;
