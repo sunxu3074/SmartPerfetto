@@ -56,12 +56,18 @@ should use WSL2; native Windows users should use the portable package.
    ```bash
    npm whoami
    npm --prefix backend run cli:pack-check
-   npm --prefix backend publish --access public
+   cd backend
+   npm publish --access public
+   cd ..
    npm view @gracker/smartperfetto version --json
    ```
    For a new scope or org, verify scope permission first. Publishing can
    return success before registry metadata is fully visible; wait and verify
    both `npm view` and an isolated install before calling the npm release done.
+   Do not use `npm --prefix backend publish --access public`: npm can still
+   resolve the publish target as the repository root package, hit the root
+   `private` guard, and fail with `EPRIVATE` without publishing
+   `@gracker/smartperfetto`.
 7. Run isolated npm smoke in a temp directory:
    ```bash
    npm install @gracker/smartperfetto@<version>
@@ -84,6 +90,8 @@ should use WSL2; native Windows users should use the portable package.
 - The package must expose both `smp` and `smartperfetto` bins.
 - `npm --prefix backend run cli:pack-check` must verify package contents before
   publish.
+- Publish from the `backend/` working directory with `npm publish --access
+  public`; do not publish with `npm --prefix backend publish`.
 - The packed CLI must contain runtime assets needed by `doctor`, `query`,
   `skill`, `run`, `ask`, `repl`, `compare`, and `report export`.
 - Do not publish if dry-run or pack-check reports missing bin files,
