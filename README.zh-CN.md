@@ -37,8 +37,8 @@ SmartPerfetto 运行时只会使用一个 active 的模型 provider 来源。第
 |----------|----------|------|
 | 本地源码运行，且同一终端里的 Claude Code 已经能正常请求 | 不需要 `.env` | 先运行 `claude` 验证；启动时运行 `./start.sh`，它会同时启动后端和预构建前端 |
 | 本地源码运行，使用显式 API key 或兼容代理 | `backend/.env` | 运行 `cp backend/.env.example backend/.env` 创建 |
-| Docker Hub 镜像 | Provider Manager UI 或仓库根目录 `.env` | Docker 容器看不到宿主机的 Claude Code 登录态；只有脚本化部署才需要 `.env` |
-| 从源码构建 Docker 镜像 | Provider Manager UI 或仓库根目录 `.env` | `docker-compose.yml` 会读取根目录 `.env`；和 Docker Hub 路径保持一致 |
+| GHCR 镜像 | Provider Manager UI 或仓库根目录 `.env` | Docker 容器看不到宿主机的 Claude Code 登录态；只有脚本化部署才需要 `.env` |
+| 从源码构建 Docker 镜像 | Provider Manager UI 或仓库根目录 `.env` | `docker-compose.yml` 会读取根目录 `.env`；和发布镜像路径保持一致 |
 | 免安装包 | 优先用 Provider Manager UI | 打开包启动后的 `http://localhost:10000` 配置；只有需要脚本化部署时才改包的 env 文件 |
 
 步骤 2：选择 runtime 并填写 provider。Claude Agent SDK 用于 Claude Code / Anthropic-compatible provider，OpenAI Agents SDK 用于 OpenAI / OpenAI-compatible provider。首次配置只保留一类凭证；如果后续高级部署里两类凭证同时存在，由 `SMARTPERFETTO_AGENT_RUNTIME` 或前端 active provider 决定；都没有显式选择时默认走 Claude Agent SDK。
@@ -105,7 +105,7 @@ SMARTPERFETTO_OUTPUT_LANGUAGE=en
 
 | 渠道 | 安装 / 运行 | Node 要求 | 包含内容 |
 |------|-------------|-----------|----------|
-| Docker Hub | `docker compose -f docker-compose.hub.yml up -d` | 不需要宿主机 Node.js | 后端、提交的预构建 UI、固定 `trace_processor_shell` |
+| GHCR 容器镜像 | `docker compose -f docker-compose.hub.yml up -d` | 不需要宿主机 Node.js | 后端、提交的预构建 UI、固定 `trace_processor_shell` |
 | GitHub 免安装包 | 下载 `smartperfetto-v<version>-*.zip` / `.tar.gz` | 包内自带 Node.js 24 | 启动器、后端、预构建 UI、原生依赖、固定 `trace_processor_shell` |
 | npm CLI | `npm install -g @gracker/smartperfetto` | 宿主机 Node.js `>=24 <25` | `smp` / `smartperfetto` CLI、Skill、Strategy、SQL、trace-processor 预编译产物 |
 | 源码 checkout | `./start.sh` | 宿主机 Node.js 24 LTS | 后端源码、提交的预构建 UI、可选 `perfetto/` submodule 用于 UI 开发 |
@@ -118,9 +118,9 @@ SMARTPERFETTO_OUTPUT_LANGUAGE=en
 
 ### Docker 运行（推荐）
 
-只想把 SmartPerfetto 跑起来时，推荐使用这个方式。你只需要 Docker Desktop/Engine；AI provider 可以启动后在 UI Provider Manager 里配置，只有脚本化部署时才需要使用仓库根目录 `.env`。不需要安装 Node.js，不需要 C++ 工具链，也不需要初始化 `perfetto/` submodule。Docker Hub 镜像每天从 `main` 自动发布，镜像内已经包含后端、预构建 Perfetto UI 和固定版本的 `trace_processor_shell`，也能避开本地首次启动时访问 Google artifact bucket 失败的问题。
+只想把 SmartPerfetto 跑起来时，推荐使用这个方式。你只需要 Docker Desktop/Engine；AI provider 可以启动后在 UI Provider Manager 里配置，只有脚本化部署时才需要使用仓库根目录 `.env`。不需要安装 Node.js，不需要 C++ 工具链，也不需要初始化 `perfetto/` submodule。GHCR 镜像每天从 `main` 自动发布，镜像内已经包含后端、预构建 Perfetto UI 和固定版本的 `trace_processor_shell`，也能避开本地首次启动时访问 Google artifact bucket 失败的问题。
 
-Docker Hub 镜像和源码 Docker build 都直接使用根目录 `frontend/` 里已经提交的预构建 UI；Docker 用户不会在本地构建 Perfetto submodule 前端。
+GHCR 镜像和源码 Docker build 都直接使用根目录 `frontend/` 里已经提交的预构建 UI；Docker 用户不会在本地构建 Perfetto submodule 前端。
 
 容器在没有本地 `.env` 文件时也能启动，用于 health/UI smoke check；真正执行 AI 分析需要一个明确的 provider 来源：可以是 UI Provider Manager profile，也可以是一个 env provider block，例如 Anthropic 直连用 `ANTHROPIC_API_KEY`，Claude-compatible provider 用 `ANTHROPIC_BASE_URL` 加 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`，OpenAI-compatible provider 用 `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk` 加 `OPENAI_*` 字段。
 
@@ -134,7 +134,7 @@ Windows 用户使用 Docker Desktop，并启用 WSL2 backend。发布的是 Linu
 
 步骤 2（可选）：创建 Docker env 文件。运行 `cp .env.example .env`，编辑 `.env`，解注释一个 provider block，先替换 API key/token。如果 provider 控制台给出不同 Base URL 或模型 ID，以控制台为准。如果准备在 UI 里配置 provider，可以跳过这一步；真正执行 AI 分析必须有一个 provider 来源。
 
-步骤 3：拉取 Docker Hub 镜像。运行 `docker compose -f docker-compose.hub.yml pull`。
+步骤 3：拉取 GHCR 镜像。运行 `docker compose -f docker-compose.hub.yml pull`。
 
 步骤 4：启动容器。运行 `docker compose -f docker-compose.hub.yml up -d`。
 

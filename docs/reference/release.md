@@ -20,7 +20,7 @@ This file is part of SmartPerfetto. See LICENSE for details.
 |---|---|---|---|
 | npm CLI | `@gracker/smartperfetto` | `smp` / `smartperfetto` | 需要用户本机 Node.js `>=24 <25`；不包含 Web UI launcher |
 | GitHub 免安装包 | `smartperfetto-v<version>-windows-x64.zip`、`smartperfetto-v<version>-macos-arm64.zip`、`smartperfetto-v<version>-linux-x64.tar.gz` | 包内 launcher | 自带 Node.js 24、原生依赖、预构建 `frontend/`、固定 `trace_processor_shell` |
-| Docker Hub | workflow 从 `main` 构建的 Linux 镜像 | `docker compose -f docker-compose.hub.yml up -d` | 不读取宿主机 Claude Code 登录态 |
+| GHCR 容器镜像 | workflow 从 `main` 构建的 Linux 镜像 | `docker compose -f docker-compose.hub.yml up -d` | 不读取宿主机 Claude Code 登录态 |
 | 源码 checkout | Git 仓库 | `./start.sh` | 普通使用读提交的 `frontend/`；只改 UI 插件时才需要 `perfetto/` submodule |
 
 ## 正常公开发布

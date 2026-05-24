@@ -21,7 +21,7 @@ any release work, it must also read [AGENTS.md](../../AGENTS.md),
 |---|---|---|---|
 | npm CLI | `@gracker/smartperfetto` | `smp` / `smartperfetto` | Requires user Node.js `>=24 <25`; does not include the Web UI launcher |
 | GitHub portable | `smartperfetto-v<version>-windows-x64.zip`, `smartperfetto-v<version>-macos-arm64.zip`, `smartperfetto-v<version>-linux-x64.tar.gz` | bundled launcher | Bundles Node.js 24, native dependencies, committed `frontend/`, and pinned `trace_processor_shell` |
-| Docker Hub | Linux image built from `main` workflow | `docker compose -f docker-compose.hub.yml up -d` | Does not read host Claude Code local auth |
+| GHCR container image | Linux image built from `main` workflow | `docker compose -f docker-compose.hub.yml up -d` | Does not read host Claude Code local auth |
 | Source checkout | Git repository | `./start.sh` | Normal use serves committed `frontend/`; `perfetto/` submodule is only needed for UI plugin work |
 
 ## Normal Public Release
